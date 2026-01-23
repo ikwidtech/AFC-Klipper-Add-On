@@ -16,6 +16,8 @@ afc_config_dir="$printer_config_dir/AFC"
 afc_file="$afc_config_dir/AFC.cfg"
 klipper_venv="$HOME/klippy-env/bin"
 moonraker_config="$printer_config_dir/moonraker.conf"
+moonraker_port=7125
+moonraker_ip="localhost"
 
 # Global vars
 temp_log=""
@@ -263,6 +265,15 @@ log_can_interfaces
   else
       printf "%s\n" "${ALL_CAN_IDS[@]}"
   fi
+} >> "$temp_log"
+
+echo "Gathering AFC statistics "
+{
+  echo "================================================================"
+  echo "AFC STATS REPORT - $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "================================================================"
+  curl -s $moonraker_ip:$moonraker_port/server/database/item?namespace=afc_stats | jq -r '[.result.value | [paths(scalars) as $p | [($p | join(".")), (getpath($p) | if (tostring | test("^-?[0-9.]+$")) then (tonumber | .*100 | round / 100 | tostring) else tostring end)]] | .[]] | .[] | @tsv' | column -t -s $'\t' || true
+  echo ""
 } >> "$temp_log"
 
 # Let's get all the AFC config files

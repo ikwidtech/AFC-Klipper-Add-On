@@ -24,6 +24,7 @@ class AFCExtruderStepper(AFCLane):
         super().__init__(config)
 
         self.extruder_stepper   = extruder.ExtruderStepper(config)
+        self.stepper_enable     = self.printer.lookup_object('stepper_enable')
 
         # Check for Klipper new motion queuing update
         try:
@@ -139,7 +140,12 @@ class AFCExtruderStepper(AFCLane):
 
         :param enable: Enables/disables stepper motor
         """
-        self.function.do_enable(enable, f"AFC_stepper {self.name}")
+        if hasattr(self.stepper_enable, "set_motors_enable"):
+            # New klipper enable function
+            self.stepper_enable.set_motors_enable([f"AFC_stepper {self.name}"], enable)
+        else:
+            # Old klipper and kalico enable function
+            self.stepper_enable.motor_debug_enable(f"AFC_stepper {self.name}", enable)
 
     def sync_to_extruder(self, update_current=True, extruder_name=None):
         """
@@ -169,7 +175,9 @@ class AFCExtruderStepper(AFCLane):
         :param current: Sets TMC current to specified value
         """
         if self.tmc_print_current is not None and current is not None:
-            self.gcode.run_script_from_command("SET_TMC_CURRENT STEPPER='{}' CURRENT={}".format(self.name, current))
+            command = "SET_TMC_CURRENT STEPPER='{}' CURRENT={}".format(self.name, current)
+            self.logger.debug(f"Running macro: {command}")
+            self.gcode.run_script_from_command(command)
 
     def set_load_current(self):
         """

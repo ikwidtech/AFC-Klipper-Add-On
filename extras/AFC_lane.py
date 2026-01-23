@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from extras.AFC_hub import afc_hub
     from extras.AFC_buffer import AFCTrigger
     from extras.AFC_unit import afcUnit
+    from extras.AFC import afc
 
 try: from extras.AFC_utils import ERROR_STR, add_filament_switch
 except: raise error("Error when trying to import AFC_utils.ERROR_STR, add_filament_switch\n{trace}".format(trace=traceback.format_exc()))
@@ -63,8 +64,8 @@ class AFCLane:
     UPDATE_WEIGHT_DELAY = 10.0
     def __init__(self, config: ConfigWrapper) -> None:
         self.printer            = config.get_printer()
-        self.afc                = self.printer.lookup_object('AFC')
-        self.gcode              = self.printer.lookup_object('gcode')
+        self.afc: afc           = self.printer.load_object(config, 'AFC')
+        self.gcode              = self.printer.load_object(config, 'gcode')
         self.reactor            = self.printer.get_reactor()
         self.extruder_stepper   = None
         self.logger             = self.afc.logger
@@ -180,10 +181,10 @@ class AFCLane:
 
         self.filament_diameter  = config.getfloat("filament_diameter", 1.75)    # Diameter of filament being used
         self.filament_density   = config.getfloat("filament_density", 1.24)     # Density of filament being used
-        self.inner_diameter     = config.getfloat("spool_inner_diameter", 100)  # Inner diameter in mm
-        self.outer_diameter     = config.getfloat("spool_outer_diameter", 200)  # Outer diameter in mm
-        self.empty_spool_weight = config.getfloat("empty_spool_weight", 190)    # Empty spool weight in g
-        self.max_motor_rpm      = config.getfloat("assist_max_motor_rpm", 500)  # Max motor RPM
+        self.inner_diameter     = config.getfloat("spool_inner_diameter", 75, minval=1)   # Inner diameter in mm
+        self.outer_diameter     = config.getfloat("spool_outer_diameter", 200, minval=100)  # Outer diameter in mm
+        self.empty_spool_weight = config.getfloat("empty_spool_weight", 190, minval=1)    # Empty spool weight in g
+        self.max_motor_rpm      = config.getfloat("assist_max_motor_rpm", 465)  # Max motor RPM
         self.rwd_speed_multi    = config.getfloat("rwd_speed_multiplier", 0.5)  # Multiplier to apply to rpm
         self.fwd_speed_multi    = config.getfloat("fwd_speed_multiplier", 0.5)  # Multiplier to apply to rpm
         self.diameter_range     = self.outer_diameter - self.inner_diameter     # Range for effective diameter
@@ -277,9 +278,7 @@ class AFCLane:
         happen between klipper and moonraker when first starting up.
         """
         if self.unit_obj.type != "HTLF" or (self.unit_obj.type == "HTLF" and "AFC_lane" in self.fullname):
-            values = None
-            if self.afc.moonraker.afc_stats is not None:
-                values = self.afc.moonraker.afc_stats["value"]
+            values = self.afc.moonraker.get_afc_stats()
             self.lane_load_count = AFCStats_var(self.name, "load_count", values, self.afc.moonraker)
             self.espooler.handle_moonraker_connect()
 
@@ -573,22 +572,36 @@ class AFCLane:
         self.status = AFCLaneState.NONE
         self.unit_obj.lane_not_ready(self)
         self.logger.info("Infinite Spool triggered for {}".format(self.name))
-        empty_lane = self.afc.lanes[self.afc.current]
-        change_lane = self.afc.lanes[self.runout_lane]
+        empty_lane = self.afc.lanes.get(self.afc.current)
+        change_lane = self.afc.lanes.get(self.runout_lane)
         change_lane.status = AFCLaneState.INFINITE_RUNOUT
         # Pause printer with manual command
         self.afc.error.pause_resume.send_pause_command()
         # Saving position after printer is paused
         self.afc.save_pos()
-        # Change Tool and don't restore position. Position will be restored after lane is unloaded
-        #  so that nozzle does not sit on print while lane is unloading
-        self.afc.CHANGE_TOOL(change_lane, restore_pos=False)
+
+        # Verifying lanes are valid before continuing
+        if not change_lane:
+            self.afc.error.AFC_error(f"Error when looking up runout lane:{self.runout_lane} for lane:{self.name}")
+            return
+        if not empty_lane:
+            self.afc.error.AFC_error(f"Error when looking up current lane:{self.afc.current}")
+            return
+
+        # Position will be restored after lane is unloaded so that nozzle does not sit
+        # on print while lane is unloading
+        if not self.afc.TOOL_UNLOAD(empty_lane):
+            return
+
+        # Eject spool before loading next lane
+        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+
+        self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
+
         # Only continue if a error did not happen
         if not self.afc.error_state:
-            # Eject lane from BT
-            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
             # Resume pos
             self.afc.restore_pos()
             # Resume with manual issued command
@@ -723,7 +736,6 @@ class AFCLane:
 
                     while self.load_state == False and self.prep_state == True and self.load is not None:
                         x += 1
-                        self.do_enable(True)
                         self.move(10,500,400)
                         self.reactor.pause(self.reactor.monotonic() + 0.1)
                         if x> 40:
@@ -992,15 +1004,27 @@ class AFCLane:
         self.afc.spool.set_active_spool(None)
         self.unit_obj.lane_tool_unloaded(self)
 
-    def enable_buffer(self):
+    def enable_buffer(self, disable_fault: bool=False):
         """
         Enable the buffer if `buffer_name` is set.
         Retrieves the buffer object and calls its `enable_buffer()` method to activate it.
+
+        :param disable_fault: Set to True to disable fault detection when enabling buffer
         """
         if self.buffer_obj is not None:
+            if disable_fault: self.buffer_obj.disable_fault_sensitivity()
             self.buffer_obj.enable_buffer()
         self.espooler.enable_timer()
         self.enable_weight_timer()
+
+    def enable_fault_detection(self):
+        """
+        Helper function to restore fault sensitivity and enables buffer to reactivate
+        fault timer and multiplier.
+        """
+        if self.buffer_obj is not None:
+            self.buffer_obj.restore_fault_sensitivity()
+            self.buffer_obj.enable_buffer()
 
     def disable_buffer(self):
         """
@@ -1059,6 +1083,8 @@ class AFCLane:
         Returns True if the lane is in a normal printing state (TOOLED or LOADED).
         Prevents runout logic from triggering during transitions or maintenance.
         """
+        if self.afc.in_toolchange:
+            return False
         return self.status in (AFCLaneState.TOOLED, AFCLaneState.LOADED)
 
     def handle_toolhead_runout(self, sensor=None):
@@ -1143,7 +1169,8 @@ class AFCLane:
                     "nozzle_temp"   : self.extruder_temp,
                     "scan_time"     : scan_time,
                     "td"            : td,
-                    "lane"          : lane_number
+                    "lane"          : lane_number,
+                    "spool_id"      : self.spool_id
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -1164,7 +1191,8 @@ class AFCLane:
                     "nozzle_temp"   : "",
                     "scan_time"     : "",
                     "td"            : "",
-                    "lane"          : lane_number
+                    "lane"          : lane_number,
+                    "spool_id"      : None
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -1310,7 +1338,8 @@ class AFCLane:
         ```
         """
         if not self.load_state:
-            self.afc.error.AFC_error("Lane:{} is not loaded, cannot set loaded to toolhead for this lane.".format(self.name), pause=False)
+            self.afc.error.AFC_error("Lane:{} is not loaded, ensure that the LOAD switch is properly configured and filament is detected. "
+                                     "Switch status can be checked with the AFC_STATUS command.".format(self.name), pause=False)
             return
 
         # Do not set lane as loaded if virtual bypass or normal bypass is enabled/triggered

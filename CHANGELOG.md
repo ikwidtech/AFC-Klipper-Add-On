@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Fixed
 - Fixed `spoolman_set_active_spool` error during PREP
 
+## [2026-01-22]
+### Changed:
+- The install-afc.sh script will now allow users to install as root if it detects the user is running a SAF K1 environment.
+
+## [2026-01-15]
+### Added:
+- The afc-debug.sh script will now upload the AFC statistics from moonraker for easier troubleshooting.
+
+## Fixed
+- Updates to help with false clog/feed detections
+- Resetting filament position for clog detection when starting a new print
+
+## [2026-01-14]
+### Fix:
+- Implemented some fixes to prevent klipper crashing when calibrating HTLF units
+
+## [2026-01-12]
+### Added:
+- Added debugging messages when doing unloading filament from toolhead for tool_stn_unload movements
+
+## [2026-01-10]
+### Added:
+- Check to verify user's macros positions are set correctly and not left as default values. Changed default values to -99,-99 etc, just in case someone does truly have their positions at -1,-1.
+
+## [2026-01-09]
+### Changed:
+- Restructured how extruder load/unload counts are stored in moonraker database to work better for toolchangers.
+- Added ability to track cuts per toolhead for toolchangers.
+- Changed how average times are calculated. Use `AFC_RESET_STATS EXTRUDER=all` to use new `total_time/count` calculation.
+- Merged normal and skinny AFC_STATS printout into one function and changed printout format to work better with toolchangers.
+
 ## [2026-01-02]
 ## Added
 - Added AFC_SET_TOOLHEAD_LED macro which sets print leds based off passed in mapping
@@ -19,28 +50,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New variables(led_name, status_led_idx) were added to support setting toolhead leds
 - Updating message during PREP to print out if toolhead is detected on shuttle
 
+## [2025-12-26]
+### Changed:
+- Updated AFC_CUT macro to move to pin first before doing filament retraction.
+- Updated AFC_CUT macro so that is more safe for toolheads with cutters that move in the forwards/backwards movement. 
+- Updated AFC_CUT macro to clear pin once cutting is done so that is safer for toolheads with forward/backward cutters.
+
+## [2025-12-18]
+### Fixed
+- Fixing issue where order mattered when creating flat config files, replaced lookup_object with load_object so klipper would not error out and instead load object if it was not already loaded.
+
+## [2025-12-17]
+### Fixed
+- Fixed issue where AFC would crash klipper when trying to find git version when git folder does not exist
+- Fixed issue where AFC would cause error if log file variable was not passed into klipper service
+
 ## [2025-12-14]
 ## Added
 - Ability to use TD-1 device on direct load lanes
 - td1_device_id is now required to scan filament
 
+## [2025-12-11]
+### Fixed
+- Fix output of `AFC_TOGGLE_MACRO` to correctly report state of WIPE macro
+
+## [2025-12-07]
+### Added
+- Updated spool assist cruise time calculations to be more linear with spool weight
+
+## [2025-12-06]
+### Fixed
+- Fixes issue where klipper would crash for HTLF units when homing and moving lanes during prep
+
+## [2025-12-03]
+### Fixed
+- Fixes bug where print current is not correctly set back to correct value after using LANE_MOVE macro.
+- Fixed a bug when installing a HTLF, all MCU definition files would be copied over instead of just the selected board type.
+
+## [2025-11-26]
+### Added
+- Added `spool_id` field to `lane_data` namespace for Spoolman integration (#575)
+
+## [2025-11-25]
+### Added
+- **Buffer Fault Detection System**: New filament fault detection feature for AFC buffers to detect clogs, and feeding issues.
+  - Monitors extruder position and buffer state changes to detect abnormal conditions
+  - Configurable sensitivity (0-10 scale, where 0 disables, 1 is least sensitive, 10 is most sensitive)
+  - Automatically pauses print and provides diagnostic messages when faults are detected
+  - Distinguishes between clog detection (buffer advancing/expanding state) and AFC feeding issues (buffer trailing/compressing state)
+  - Timer-based monitoring with configurable CHECK_RUNOUT_TIMEOUT (0.5s default)
+- **New Command: `SET_ERROR_SENSITIVITY`**: Allows dynamic adjustment of fault detection sensitivity during runtime without restarting Klipper
+  - Supports values 0-10 (0 disables fault detection, 1 least sensitive/100mm, 10 most sensitive/10mm)
+  - Automatically enables/disables fault detection timers based on sensitivity changes
+  - Usage: `SET_ERROR_SENSITIVITY BUFFER=<buffer_name> SENSITIVITY=<0-10>`
+- Enhanced `QUERY_BUFFER` command to report fault detection status and current sensitivity level
+
+### Changed
+- Reversed buffer fault detection sensitivity scale: sensitivity value of 1 is now the least sensitive (100mm fault distance) and 10 is now the most sensitive (10mm fault distance). This makes the scale more intuitive where higher numbers mean more sensitive detection
+- Buffer callbacks (`advance_callback` and `trailing_callback`) now integrate with fault detection system
+  - When fault detection is enabled during printing, buffer automatically adjusts monitoring with extra-low/extra-high multipliers
+  - Stops fault timer when buffer is not actively engaged
+- Buffer enable/disable now properly manages fault detection timers to prevent false positives
+
+### Fixed
+- Buffer fault detection now respects the `enable` state and only triggers during active printing with movement
+
 ## [2025-11-23]
 ### Added
 - Toolchanger: Adding ability to control/swap toolheads that do not have a unit(BoxTurtle, HTLF, etc) attached to the toolhead.
+
+## [2025-11-14]
+### Update
+- Changed unload order for infinite spool to prevent excess nozzle oozing when ejecting spool. New unload order is: Unload Tool->Eject Spool->Load rollover lane
 
 ## [2025-11-09]
 ### Added
 - Add support in the `afc-install.sh` script to support OpenAMS units.
 
+### Fixes
+- Fixes an issue where spoolman was not updating a loaded spool in toolhead
+
+## [2025-11-04]
+### Changed
+- Updated error message when using the SET_LANE_LOADED command to be more descriptive.
+
+## [2025-11-03]
+### Fixes
+- Clarified fix message if during AFC calibration, the filament fails to reach to hub sensor.
+
+## [2025-11-02]
+### Changed
+- Consolidated all variables for the `POOP` macro to be in the `AFC_Macro_Vars.cfg` file instead of being split in two places.
+
+## [2025-11-01]
+### Changed
+- Removed code for Belay.
+- Cleanup terminology around compressing/expanding of the buffer to make it easier to understand for users.
+
 ## [2025-10-31]
 ### Added
 - Adding code from JOeB0l to support OpenAms Units
+
+## [2025-10-29]
+### Fixes
+- Fixed klipper crashing when commanding distance of zero for LANE_MOVE macro.
 
 ## [2025-10-25]
 ### Added
 - Added `is_direct_hub()` helper method to detect 'direct' and 'direct_load' hub types
 - Updated calibration logic to handle direct hub lanes using bowden calibration for `dist_hub` length
 - Enhanced tool swapping and activation logic with better multi-extruder support
+
+### Fixes
+- Resolved a bug where runout logic could potentially be triggered during a toolchange.
+- Resolved a bug where AFC_STATUS would crash klipper when using buffer as toolhead sensor and last lane was loaded into toolhead.
+
+
+## [2025-10-18]
+### Fixes
+- On startup, or when assigning a spool to a lane, AFC will now check the weight of the spool to check if it is either zero, null,
+  or a negative value. If any of these conditions are met, AFC will not assign the spool. This check can be disabled by 
+  setting `disable_weight_check: True` in the `[AFC]` section of the `AFC.cfg` file.
 
 ## [2025-10-16]
 ### Fixes

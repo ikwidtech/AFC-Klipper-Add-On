@@ -81,7 +81,7 @@ class AFC_HTLF(afcBoxTurtle):
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         cur_lane.prep_state = cur_lane.load_state
         if not self.prep_homed:
-            self.return_to_home( prep = True)
+            self.return_to_home( prep = True, disable_selector=False)
         status = super().system_Test( cur_lane, delay, assignTcmd, enable_movement)
         self.return_to_home()
 
@@ -109,7 +109,7 @@ class AFC_HTLF(afcBoxTurtle):
         """
         self.return_to_home()
 
-    def return_to_home(self, prep=False):
+    def return_to_home(self, prep=False, disable_selector=True):
         """
         Moves lobes to home position, if a current lane was selected this function moves back that amount and then performs smaller
         moves until home switch is triggered
@@ -132,7 +132,11 @@ class AFC_HTLF(afcBoxTurtle):
                 return False
 
         self.prep_homed = True
-        self.selector_stepper_obj.do_enable(False)
+        # Adding delay or disabling stepper motor will crash klipper with newest
+        # motion queuing changes
+        # self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+        if disable_selector:
+            self.selector_stepper_obj.do_enable(False)
         self.current_selected_lane = None
         return True
 
@@ -155,15 +159,12 @@ class AFC_HTLF(afcBoxTurtle):
         :param disable_selector: When True disables selectors motor after selecting a lane
         :return boolean: Returns True if movement of selector succeeded
         """
-        self.failed_to_home = False
         if self.current_selected_lane != lane:
             self.logger.debug("HTLF: {} Homing to endstop.".format(self.name))
-            if self.return_to_home():
+            if self.return_to_home( disable_selector=False ):
                 self.selector_stepper_obj.move(self.calculate_lobe_movement( lane.index ), 50, 50, False)
                 self.logger.debug("HTLF: {} selected".format(lane))
                 self.current_selected_lane = lane
-            else:
-                return False
 
         if disable_selector:
             self.selector_stepper_obj.do_enable(False)

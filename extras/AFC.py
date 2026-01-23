@@ -14,9 +14,10 @@ from typing import Dict, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from configfile import ConfigWrapper
-    from gcode import GCodeDispatch
+    from gcode import GCodeDispatch, GCodeCommand
     from extras.AFC_lane import AFCLane
     from extras.AFC_extruder import AFCExtruder
+    from extras.AFC_functions import afcFunction
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
@@ -35,7 +36,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.for
 try: from extras.AFC_stats import AFCStats
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-AFC_VERSION="1.0.36"
+AFC_VERSION="1.0.37"
 
 # Class for holding different states so its clear what all valid states are
 class State:
@@ -57,15 +58,15 @@ class afc:
         self.config  = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.webhooks = self.printer.lookup_object('webhooks')
+        self.webhooks = self.printer.load_object(config, 'webhooks')
         self.printer.register_event_handler("klippy:connect",self.handle_connect)
         self.logger  = AFC_logger(self.printer, self)
 
         self.spool      = self.printer.load_object(config, 'AFC_spool')
         self.error      = self.printer.load_object(config, 'AFC_error')
-        self.function   = self.printer.load_object(config, 'AFC_functions')
+        self.function: afcFunction   = self.printer.load_object(config, 'AFC_functions')
         self.function.afc = self
-        self.gcode: GCodeDispatch = self.printer.lookup_object('gcode')
+        self.gcode: GCodeDispatch = self.printer.load_object(config, 'gcode')
 
         # Registering stepper callback so that mux macro can be set properly with valid lane names
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
@@ -88,11 +89,12 @@ class afc:
         self.prep_done          = False         # Variable used to hold of save_vars function from saving too early and overriding save before prep can be ran
         self.in_print_timer     = None
         self.activate_cb_done = True
+        self.db_backup          = False
 
         # Objects for everything configured for AFC
         self.units      = {}
         self.tools: Dict[str, AFCExtruder] = {}
-        self.lanes      = {}
+        self.lanes: Dict[str, AFCLane]     = {}
         self.hubs       = {}
         self.buffers    = {}
         self.tool_cmds  = {}
@@ -138,6 +140,7 @@ class afc:
         self.test_extrude_amt       = config.get('test_extrude_amt', 10)
         self.temp_wait_tolerance    = config.getfloat("temp_wait_tolerance", 5.0)         # Temperature tolerance in degrees Celsius for wait commands like M109
 
+        self.disable_weight_check   = config.getboolean("disable_weight_check", False) # Set to True to disable weight check when loading filament into lane/toolhead
         #LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness.
         self.ind_lights = None
@@ -208,7 +211,8 @@ class afc:
         self.resume_z_speed         = config.getfloat("resume_z_speed", self.speed) # Speed mm/s of resume move in Z. Set to 0 to use gcode speed
 
         self.global_print_current   = config.getfloat("global_print_current", None) # Global variable to set steppers current to a specified current when printing. Going lower than 0.6 may result in TurtleNeck buffer's not working correctly
-
+        self.spool_ratio            = config.getfloat("spool_ratio",2)              # gear ratio for printed gearbox between N20 and spooler wheels
+        self.full_weight            = config.getfloat("full_weight",1000, minval=1) # full weight of filament spool (not counting spool itself)
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", False) # Set to True to show all sensor switches as filament sensors in mainsail/fluidd gui
         self.load_to_hub            = config.getboolean("load_to_hub", True)        # Fast loads filament to hub when inserted, set to False to disable. This is a global setting and can be overridden at AFC_stepper
         self.disable_homing_check   = config.getboolean("disable_homing_check", False)# Disables homing check when doing toolchanges. Only use this if you are using a toolchanger and don't need to home to unload toolheads
@@ -266,6 +270,8 @@ class afc:
                                         self.cmd_AFC_TOGGLE_MACRO_help, self.cmd_AFC_TOGGLE_MACRO_options)
         self.function.register_commands(self.show_macros, 'UNSET_LANE_LOADED', self.cmd_UNSET_LANE_LOADED,
                                         self.cmd_UNSET_LANE_LOADED_help)
+        self.function.register_commands(self.show_macros, 'AFC_RESET_STATS', self.cmd_AFC_RESET_STATS,
+                                        self.cmd_AFC_RESET_STATS_help, self.cmd_AFC_RESET_STATS_options)
 
     @property
     def current(self):
@@ -338,7 +344,7 @@ class afc:
 
                     self.toolhead.dwell(1)
             self.td1_defined, self._td1_present, self.lane_data_enabled = self.moonraker.check_for_td1()
-            self.afc_stats = AFCStats(self.moonraker, self.logger, self.tool_cut_threshold)
+            self.afc_stats = AFCStats(self.moonraker, self.logger, len(self.tools) > 1)
 
             self.printer.send_event("afc:moonraker_connect")
         except Exception as e:
@@ -388,11 +394,73 @@ class afc:
         import subprocess
         import os
         afc_dir  = os.path.dirname(os.path.realpath(__file__))
-        git_hash = subprocess.check_output(['git', '-C', '{}'.format(afc_dir), 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
-        git_commit_num = subprocess.check_output(['git', '-C', '{}'.format(afc_dir), 'rev-list', 'HEAD', '--count']).decode('ascii').strip()
+        git_hash = '_'
+        git_commit_num = '_'
+        try:
+            git_hash = subprocess.check_output(['git', '-C', '{}'.format(afc_dir), 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
+            git_commit_num = subprocess.check_output(['git', '-C', '{}'.format(afc_dir), 'rev-list', 'HEAD', '--count']).decode('ascii').strip()
+        except:
+            self.logger.debug(f"Error fetching repo info: {traceback.format_exc()}")
+
         string  = "AFC Version: v{}-{}-{}".format(AFC_VERSION, git_commit_num, git_hash)
 
         self.logger.info(string, console_only)
+
+    def verify_macro_positions(self) -> str:
+        """
+        Verifies that cut, park, poop, kick, wipe positions are set correctly if these
+        macros have been enabled in AFC.cfg file.
+
+        :return str: If a position has not been updated error string is returned with
+                     text informing the user they need to update their positions
+        """
+        error_str = ""
+        tool_cut_obj = self.printer.lookup_object('gcode_macro _AFC_CUT_TIP_VARS', None)
+        if (self.tool_cut
+            and self.tool_cut_cmd == "AFC_CUT"
+            and tool_cut_obj):
+            pin_loc_xy = tool_cut_obj.variables.get('pin_loc_xy', None)
+            if pin_loc_xy and pin_loc_xy == (-99,-99):
+                error_str += 'tool_cut is set to True and variable_pin_loc_xy has not been updated.\n'
+                error_str += 'Please update variable_pin_loc_xy in AFC\AFC_Macro_Vars.cfg file.\n\n'
+
+        park_obj = self.printer.lookup_object('gcode_macro _AFC_PARK_VARS', None)
+        if (self.park
+            and self.park_cmd == "AFC_PARK"
+            and park_obj):
+            park_loc_xy = park_obj.variables.get('park_loc_xy', None)
+            if park_loc_xy and park_loc_xy == (-99,-99):
+                error_str += 'park is set to True and variable_park_loc_xy has not been updated.\n'
+                error_str += 'Please update variable_park_loc_xy in AFC\AFC_Macro_Vars.cfg file.\n\n'
+
+        poop_obj = self.printer.lookup_object('gcode_macro _AFC_POOP_VARS', None)
+        if (self.poop
+            and self.poop_cmd == "AFC_POOP"
+            and poop_obj):
+            purge_loc_xy = poop_obj.variables.get('purge_loc_xy', None)
+            if purge_loc_xy and purge_loc_xy == (-99,-99):
+                error_str += 'poop is set to True and variable_purge_loc_xy has not been updated.\n'
+                error_str += 'Please update variable_purge_loc_xy in AFC\AFC_Macro_Vars.cfg file.\n\n'
+
+        kick_obj = self.printer.lookup_object('gcode_macro _AFC_KICK_VARS', None)
+        if (self.kick
+            and self.kick_cmd == "AFC_KICK"
+            and kick_obj):
+            kick_start_loc = kick_obj.variables.get('kick_start_loc', None)
+            if kick_start_loc and kick_start_loc == (-99,-99,5):
+                error_str += 'kick is set to True and variable_kick_start_loc has not been updated.\n'
+                error_str += 'Please update variable_kick_start_loc in AFC\AFC_Macro_Vars.cfg file.\n\n'
+
+        wipe_obj = self.printer.lookup_object('gcode_macro _AFC_BRUSH_VARS', None)
+        if (self.wipe
+            and self.wipe_cmd == "AFC_BRUSH"
+            and wipe_obj):
+            brush_loc = wipe_obj.variables.get('brush_loc', None)
+            if brush_loc and brush_loc == (-99,-99,-1):
+                error_str += 'wipe is set to True and variable_brush_loc has not been updated.\n'
+                error_str += 'Please update variable_brush_loc in AFC\AFC_Macro_Vars.cfg file.\n\n'
+
+        return error_str
 
     @property
     def td1_present(self):
@@ -434,6 +502,13 @@ class afc:
             self.number_of_toolchanges  = self.moonraker.get_file_filament_change_count(print_filename)
             self.current_toolchange     = -1 # Reset
             self.logger.info("Total number of toolchanges set to {}".format(self.number_of_toolchanges))
+
+            # Get current lane and update position to reset fault detection as sometimes
+            # purging in PRINT_START can lead to false positive detections
+            current_lane = self.function.get_current_lane_obj()
+            if current_lane:
+                if current_lane.buffer_obj is not None:
+                    current_lane.buffer_obj.update_filament_error_pos()
 
         return self.reactor.NEVER
 
@@ -622,7 +697,7 @@ class afc:
 
         self.logger.info("Tool Cut {}, Park {}".format(self.tool_cut, self.park))
         self.logger.info("Kick {}, Poop {}".format(self.kick, self.poop))
-        self.logger.info("Wipe {}, Form tip {}".format(self.tool_cut, self.form_tip))
+        self.logger.info("Wipe {}, Form tip {}".format(self.wipe, self.form_tip))
 
     cmd_AFC_QUIET_MODE_help = "Set quiet mode speed and enable/disable quiet mode"
     cmd_AFC_QUIET_MODE_options = {"SPEED": {"type": "float", "default": 50},
@@ -726,6 +801,11 @@ class afc:
             return
         lane = gcmd.get('LANE', None)
         distance = gcmd.get_float('DISTANCE', 0)
+
+        if distance == 0:
+            self.error.AFC_error("Distance to move cannot be zero", pause=False)
+            return
+
         if lane not in self.lanes:
             self.logger.info('{} Unknown'.format(lane))
             return
@@ -736,12 +816,11 @@ class afc:
         if abs(distance) >= 200: speed_mode = SpeedMode.LONG
 
         cur_lane.set_load_current() # Making current is set correctly when doing lane moves
-        cur_lane.do_enable(True)
         cur_lane.move_advanced(distance, speed_mode, assist_active = AssistActive.YES)
         cur_lane.do_enable(False)
         self.current_state = State.IDLE
         cur_lane.unit_obj.return_to_home()
-        # Put CAM back to lane if its loaded to toolhead
+        # Put CAM back to lane if it is loaded to the toolhead
         self.function.select_loaded_lane()
 
     def _get_resume_speed(self):
@@ -952,7 +1031,6 @@ class afc:
         if not cur_lane.prep_state: return
         cur_lane.status = AFCLaneState.HUB_LOADING
         if not cur_lane.load_state:
-            cur_lane.do_enable(True)
             while not cur_lane.load_state:
                 cur_lane.move_advanced( cur_hub.move_dis, SpeedMode.SHORT)
         if not cur_lane.loaded_to_hub:
@@ -1011,7 +1089,6 @@ class afc:
             # once user removes filament lanes status will go to None
             cur_lane.status = AFCLaneState.EJECTING
             self.save_vars()
-            cur_lane.do_enable(True)
             if cur_lane.loaded_to_hub:
                 cur_lane.move_advanced(cur_lane.dist_hub * -1, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
             cur_lane.loaded_to_hub = False
@@ -1026,7 +1103,7 @@ class afc:
             self.save_vars()
 
             # Removing spool from vars since it was ejected
-            self.spool.set_spoolID(cur_lane, "")
+            self.spool.set_spoolID(cur_lane, None)
             self.logger.info("LANE {} eject done".format(cur_lane.name))
             cur_lane.unit_obj.lane_not_ready(cur_lane)
         elif cur_lane.extruder_obj.no_lanes and cur_lane.extruder_obj.lane_loaded:
@@ -1088,8 +1165,17 @@ class afc:
         if not self.function.check_homed():
             return False
 
+        error_str = self.verify_macro_positions()
+        if error_str:
+            self.error.AFC_error(
+                f"Error occurred when verifying macro positions, TOOL_LOAD aborted.\n{error_str}",
+                pause=self.function.in_print()
+            )
+            return False
+
         if cur_lane is None:
-            self.error.AFC_error("No lane provided to load, not loading any lane.", pause=self.function.in_print())
+            self.error.AFC_error("No lane provided to load, not loading any lane.",
+                                 pause=self.function.in_print())
             # Exit early if no lane is provided.
             return False
 
@@ -1155,6 +1241,7 @@ class afc:
                     self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                     self.function.log_toolhead_pos()
 
+                cur_lane.enable_fault_detection()
                 # Update lane and extruder state for tracking.
                 cur_extruder.lane_loaded = cur_lane.name
                 self.spool.set_active_spool(cur_lane.spool_id)
@@ -1166,7 +1253,7 @@ class afc:
                 self.afc_stats.average_tool_load_time.average_time(load_time)
 
                 # Increment stat counts
-                self.afc_stats.tc_tool_load.increase_count()
+                cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
                 cur_lane.lane_load_count.increase_count()
                 cur_lane.espooler.stats.update_database()
 
@@ -1219,9 +1306,6 @@ class afc:
         else:
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
-
-            # Enable the lane for filament movement.
-            cur_lane.do_enable(True)
 
             # Move filament to the hub if it's not already loaded there.
             if not cur_lane.loaded_to_hub or cur_lane.is_direct_hub():
@@ -1310,7 +1394,7 @@ class afc:
                         msg += "Buffer did not become compressed after {} short moves.\n".format(self.tool_max_load_checks)
                         msg += "Setting and increasing 'tool_max_load_checks' in AFC.cfg may improve loading reliability.\n\n"
                         msg += "Check that the filament is properly loaded into the toolhead extruder. If filament is loaded\n"
-                        msg += "into toolhead extruders gears, then manually run SET_LANE_LOADED LANE={cur_lane.name} then\n"
+                        msg += f"into toolhead extruders gears, then manually run SET_LANE_LOADED LANE={cur_lane.name} then\n"
                         msg += "manually extrude filament and clean nozzle."
                         if self.function.in_print():
                             msg += '\nOnce issue is resolved click resume to continue printing'
@@ -1320,8 +1404,11 @@ class afc:
 
         # Update tool and lane status.
         cur_lane.set_tool_loaded()
-        cur_lane.enable_buffer()
+        # Setting disable_fault so that fault detection is turned off for users
+        # that utilize poop
+        cur_lane.enable_buffer(disable_fault=True)
         self.save_vars()
+
         return True
 
     cmd_TOOL_UNLOAD_help = "Unload from tool head"
@@ -1360,7 +1447,7 @@ class afc:
         # User manually unloaded spool from toolhead, remove spool from active status
         self.spool.set_active_spool(None)
 
-    def TOOL_UNLOAD(self, cur_lane):
+    def TOOL_UNLOAD(self, cur_lane: AFCLane):
         """
         This function handles the unloading of a specified lane from the tool. It performs
         several checks and movements to ensure the lane is properly unloaded.
@@ -1375,9 +1462,18 @@ class afc:
         if not self.function.check_homed():
             return False
 
+        error_str = self.verify_macro_positions()
+        if error_str:
+            self.error.AFC_error(
+                f"Error occurred when verifying macro positions, TOOL_UNLOAD aborted.\n{error_str}",
+                pause=self.function.in_print()
+            )
+            return False
+
         if cur_lane is None:
             # If no lane is provided, exit the function early with a failure.
-            self.error.AFC_error("No lane is currently loaded, nothing to unload", pause=self.function.in_print())
+            self.error.AFC_error("No lane is currently loaded, nothing to unload",
+                                 pause=self.function.in_print())
             return False
 
         # Lookup current extruder object using the lane's information.
@@ -1483,13 +1579,10 @@ class afc:
             # Synchronize the extruder stepper with the lane.
             cur_lane.sync_to_extruder()
 
-            # Enable the lane for unloading operations.
-            cur_lane.do_enable(True)
             cur_lane.select_lane()
-
             # Perform filament cutting and parking if specified.
             if self.tool_cut:
-                self.afc_stats.increase_cut_total()
+                cur_lane.extruder_obj.estats.increase_cut_total()
                 self.gcode.run_script_from_command(self.tool_cut_cmd)
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
                 self.function.log_toolhead_pos()
@@ -1523,9 +1616,12 @@ class afc:
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
                 cur_lane.unsync_to_extruder()
                 while not cur_lane.get_trailing() and self.tool_max_unload_attempts > 0:
+                    num_tries += 1
+                    self.afcDeltaTime.log_with_time(
+                        f'TOOL_UNLOAD: Retracting Buffer, Try:{num_tries}'
+                    )
                     # attempt to return buffer to trailing pin
                     cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                    num_tries += 1
                     self.reactor.pause(self.reactor.monotonic() + 0.1)
                     if num_tries > self.tool_max_unload_attempts:
                         msg = ''
@@ -1545,6 +1641,9 @@ class afc:
                 cur_lane.sync_to_extruder(False)
                 # we only need to do this if we need to move off the extruder gears
                 if cur_extruder.tool_stn_unload > 0:
+                    self.afcDeltaTime.log_with_time(
+                        'TOOL_UNLOAD: Buffer-Unloading from toolhead(tool_stn_unload)'
+                    )
                     with cur_lane.assist_move(cur_extruder.tool_unload_speed, True, cur_lane.assisted_unload):
                         self.move_e_pos( cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Buffer Move")
 
@@ -1554,9 +1653,12 @@ class afc:
                 if cur_extruder.tool_stn_unload == 0:
                     cur_lane.unsync_to_extruder()
                     while cur_lane.get_toolhead_pre_sensor_state():
+                        num_tries += 1
+                        self.afcDeltaTime.log_with_time(
+                            f'TOOL_UNLOAD: Sensor-Unloading from toolhead(tool_stn_unload==0), Try:{num_tries}'
+                        )
                         # attempt to move filament back from sensor without moving extruder
                         cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                        num_tries += 1
                         if num_tries > self.tool_max_unload_attempts:
                             # note that this will break out of the loop and immediately fall into the error
                             # condition of the next loop for messaging to the user
@@ -1579,6 +1681,10 @@ class afc:
                                     message += "\nOnce lane is loaded click resume to continue printing"
                         self.error.handle_lane_failure(cur_lane, message)
                         return False
+
+                    self.afcDeltaTime.log_with_time(
+                        f'TOOL_UNLOAD: Sensor-Unloading from toolhead(tool_stn_unload), Try:{num_tries}'
+                    )
                     cur_lane.sync_to_extruder()
 
                     with cur_lane.assist_move(cur_extruder.tool_unload_speed, True, cur_lane.assisted_unload):
@@ -1678,7 +1784,7 @@ class afc:
         # Update tool and lane status.
         cur_lane.disable_buffer()
         cur_lane.do_enable(False)
-        self.afc_stats.tc_tool_unload.increase_count()
+        cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
         self.save_vars()
         return True
 
@@ -1741,7 +1847,7 @@ class afc:
 
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length)
 
-    def CHANGE_TOOL(self, cur_lane, purge_length=None, restore_pos=True):
+    def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length=None, restore_pos=True):
         self.afcDeltaTime.set_start_time()
         # Check if the bypass filament sensor detects filament; if so, abort the tool change.
         if self._check_bypass(unload=False): return
@@ -1799,7 +1905,7 @@ class afc:
                 total_time = self.afcDeltaTime.log_total_time("Total change time:")
                 self.afc_stats.average_toolchange_time.average_time(total_time)
                 self.in_toolchange = False
-                self.afc_stats.increase_toolcount_change()
+                cur_lane.extruder_obj.estats.increase_toolcount_change()
             else:
                 # Error happened, reset toolchanges without error count
                 if not self.testing:
@@ -2082,24 +2188,103 @@ class afc:
         self.afc_stats.print_stats(afc_obj=self, short=short)
 
     cmd_AFC_CHANGE_BLADE_help = "Sets cutter blade changed date and resets total count since blade was changed"
-    def cmd_AFC_CHANGE_BLADE(self, gcmd):
+    def cmd_AFC_CHANGE_BLADE(self, gcmd: GCodeCommand):
         """
         This macro handles resetting cut total since blade was last changed and updates the data
         the blade was last changed to current date time when this macro was run.
 
+        Extruder variable is optional and will default to 'extruder'
+
         Usage
         -----
-        `AFC_CHANGE_BLADE`
+        `AFC_CHANGE_BLADE EXTRUDER=<extruder>`
 
         Example
         -----
         ```
-        AFC_CHANGE_BLADE
+        AFC_CHANGE_BLADE EXTRUDER=extruder1
         ```
         """
-        self.afc_stats.last_blade_changed.set_current_time()
-        self.afc_stats.cut_total_since_changed.reset_count()
-        self.logger.info("Cutter blade stats reset")
+        extruder: str = gcmd.get("EXTRUDER", "extruder")
+        extruder_obj = self.tools.get(extruder, None)
+        if extruder_obj:
+            extruder_obj.estats.last_blade_changed.set_current_time()
+            extruder_obj.estats.cut_total_since_changed.reset_count()
+            self.logger.info(f"Cutter blade stats reset for {extruder}")
+        else:
+            self.logger.error(f"{extruder} is not a valid extruder name")
+
+    cmd_AFC_RESET_STATS_help ="Resets stats for a given extruder or lane"
+    cmd_AFC_RESET_STATS_options = {"EXTRUDER": {"type": "string", "default":''},
+                                   "LANE": {"type":"string", "default": ''}}
+    def cmd_AFC_RESET_STATS(self, gcmd: GCodeCommand):
+        """
+        This macro handles resetting extruder(s) and lane(s) change total's. You can reset
+        each extruder or lane one by one or use `all`. When using the command,
+        moonrakers database will be backedup just incase you want to restore the old data.
+
+        When using `all` for extruders, this will trigger AFC will to start using a different
+        calculation when printing lane change times. AFC will now keep track of the total
+        times and divide by the number of changes.
+
+        For example the following will reset extruder change times/counts and start using the
+        new calculation.
+
+        `AFC_RESET_STATS EXTRUDER=all`
+
+        Usage
+        -----
+        `AFC_RESET_STATS EXTRUDER=<extruder_name> LANE=<lane_name>`
+
+        Example
+        -----
+        ```
+        AFC_RESET_STATS EXTRUDER=extruder LANE=lane1
+        ```
+        """
+        extruder: str = gcmd.get('EXTRUDER', None)
+        lane: str = gcmd.get("LANE", None)
+
+        def reset_lane(lane: AFCLane):
+            lane.lane_load_count.reset_count()
+            self.logger.info(f'Lane stats reset for {lane.name}')
+
+        def reset_extruder(extruder: AFCExtruder):
+            extruder.estats.reset_stats()
+            self.logger.info(f'Extruder stats reset for {extruder.name}')
+
+        if extruder or lane:
+            if not self.db_backup:
+                error = self.moonraker.trigger_db_backup()
+                if error: return
+                self.db_backup = True
+
+        if extruder:
+            if "all" in extruder.lower():
+                for extruder_obj in self.tools.values():
+                    reset_extruder(extruder_obj)
+                self.afc_stats.average_tool_load_time.reset_count()
+                self.afc_stats.reset_average_times()
+            else:
+                extruder_obj: AFCExtruder = self.tools.get(extruder, None)
+                if extruder_obj:
+                    reset_extruder(extruder_obj)
+                else:
+                    self.logger.error(f"{extruder} is not a valid extruder name")
+
+        if lane:
+            if "all" in lane.lower():
+                for lane_obj in self.lanes.values():
+                    reset_lane(lane_obj)
+            else:
+                lane_obj: AFCLane = self.lanes.get(lane, None)
+                if lane_obj:
+                    reset_lane(lane_obj)
+                else:
+                    self.logger.error(f"{lane} is not a valid lane name")
+
+        if extruder is None and lane is None:
+            self.logger.info("A valid EXTRUDER or LANE needs to be specified to reset")
 
     cmd_AFC_CLEAR_MESSAGE_help = "Macro to clear error and warning message from AFC message queue"
     def cmd_AFC_CLEAR_MESSAGE(self, gcmd):

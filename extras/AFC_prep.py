@@ -232,7 +232,8 @@ class afcPrep:
         if self.afc.bypass.filament_present:
             self.logger.raw(f"<span class=warning--text>{bypass_name} enabled</span>")
 
-        self.afc.afc_stats.check_cut_threshold()
+        for extruder in self.afc.tools.values():
+            extruder.estats.check_cut_threshold()
 
         # Defaulting to no active spool, putting at end so endpoint has time to register
         if self.afc.current is None:
@@ -249,6 +250,11 @@ class afcPrep:
                     self.logger.raw("<span class=warning--text>Warning: Both advance and trailing "
                                     "switches are triggered on Buffer {}. "
                                     "Please check your buffer switches or configuration.</span>".format(buffer_name))
+
+        # Verifying that user has macro positions set correctly for enabled park, cut, etc macros
+        error_str = self.afc.verify_macro_positions()
+        if error_str:
+            self.logger.error(error_str)
 
 def load_config(config):
     return afcPrep(config)
