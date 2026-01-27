@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
     from extras.AFC_extruder import AFCExtruder
     from extras.AFC_functions import afcFunction
+    from extras.AFC_hub import afc_hub
+    from extras.AFC_spool import AFCSpool
+    from extras.AFC_error import afcError
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
@@ -62,8 +65,9 @@ class afc:
         self.printer.register_event_handler("klippy:connect",self.handle_connect)
         self.logger  = AFC_logger(self.printer, self)
 
-        self.spool      = self.printer.load_object(config, 'AFC_spool')
-        self.error      = self.printer.load_object(config, 'AFC_error')
+        self.spool: AFCSpool = self.printer.load_object(config, 'AFC_spool')
+        self.error: afcError = self.printer.load_object(config, 'AFC_error')
+
         self.function: afcFunction   = self.printer.load_object(config, 'AFC_functions')
         self.function.afc = self
         self.gcode: GCodeDispatch = self.printer.load_object(config, 'gcode')
@@ -1137,7 +1141,6 @@ class afc:
         TOOL_LOAD LANE=lane1 PURGE_LENGTH=80
         ```
         """
-        self.afcDeltaTime.set_start_time()
         lane = gcmd.get('LANE', None)
         if lane not in self.lanes:
             self.logger.info('{} Unknown'.format(lane))
@@ -1152,18 +1155,22 @@ class afc:
 
         self.TOOL_LOAD(cur_lane, purge_length)
 
-    def TOOL_LOAD(self, cur_lane: AFCLane, purge_length: int=None):
+    def TOOL_LOAD(self, cur_lane: AFCLane, purge_length: int=None, set_start_time=False):
         """
         This function handles the loading of a specified lane into the tool. It performs
         several checks and movements to ensure the lane is properly loaded.
 
         :param cur_lane: The lane object to be loaded into the tool.
         :param purge_length: Amount of filament to poop (optional).
+        :param set_start_time: Set true to set a starting time for afcDeltaTime.
 
         :return bool: True if load was successful, False if an error occurred.
         """
         if not self.function.check_homed():
             return False
+
+        if set_start_time:
+            self.afcDeltaTime.set_start_time()
 
         error_str = self.verify_macro_positions()
         if error_str:
@@ -1278,7 +1285,7 @@ class afc:
                     return False
         return True
 
-    def load_sequence(self, cur_lane, cur_hub, cur_extruder):
+    def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
         This function controls the loading sequence and allows for custom gcode commands to be executed
         during the loading process.
@@ -1428,7 +1435,6 @@ class afc:
         TOOL_UNLOAD LANE=lane1
         ```
         """
-        self.afcDeltaTime.set_start_time()
         # TODO figure this out if moving to cur_lane.extruder_obj.lane_loaded structure, maybe get current extruder from toolhead?
         # How would you deal with multiple extruders....
 
@@ -1447,17 +1453,21 @@ class afc:
         # User manually unloaded spool from toolhead, remove spool from active status
         self.spool.set_active_spool(None)
 
-    def TOOL_UNLOAD(self, cur_lane: AFCLane):
+    def TOOL_UNLOAD(self, cur_lane: AFCLane, set_start_time=True):
         """
         This function handles the unloading of a specified lane from the tool. It performs
         several checks and movements to ensure the lane is properly unloaded.
 
         :param cur_lane: The lane object to be unloaded from the tool.
+        :param set_start_time: Set true to set a starting time for afcDeltaTime.
 
         :return bool: True if unloading was successful, False if an error occurred.
         """
         # Check if the bypass filament sensor detects filament; if so unload filament and abort the tool load.
         if self._check_bypass(unload=True): return False
+
+        if set_start_time:
+            self.afcDeltaTime.set_start_time()
 
         if not self.function.check_homed():
             return False
@@ -1540,12 +1550,12 @@ class afc:
             if not self.unload_sequence(cur_lane, cur_hub, cur_extruder):
                 return False
 
-        unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
-        self.afc_stats.average_tool_unload_time.average_time(unload_time)
+            unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
+            self.afc_stats.average_tool_unload_time.average_time(unload_time)
         self.current_state = State.IDLE
         return True
 
-    def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
+    def unload_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
         This function controls the unloading sequence and allows for custom gcode commands to be executed
         during the loading process.
@@ -1886,7 +1896,7 @@ class afc:
                     if self.current not in self.lanes:
                         self.error.AFC_error('{} Unknown'.format(self.current))
                         return
-                    if not self.TOOL_UNLOAD(self.lanes[self.current]):
+                    if not self.TOOL_UNLOAD(self.lanes[self.current], set_start_time=False):
                         # Abort if the unloading process fails.
                         msg = (' UNLOAD ERROR NOT CLEARED')
                         self.error.fix(msg, self.lanes[self.current])  #send to error handling
@@ -1899,7 +1909,7 @@ class afc:
                 self.logger.info("{} heated and ready to print".format(infinite_extruder.name))
 
             # Load the new lane and restore the toolhead position if successful.
-            if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
+            if self.TOOL_LOAD(cur_lane, purge_length, set_start_time=False) and not self.error_state:
                 if restore_pos:
                     self.restore_pos()
                 total_time = self.afcDeltaTime.log_total_time("Total change time:")

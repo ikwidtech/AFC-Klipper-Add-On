@@ -55,9 +55,20 @@ class AfcToolchanger(afcUnit):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
         # Now that a T command is assigned, send lane data to moonraker
         cur_lane.send_lane_data()
-        self.logger.info( '{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=""))
+        msg = ""
+        if( cur_lane.prep_state and cur_lane.load_state ):
+            msg = "<span class=success--text>LOADED</span> <span class=primary--text>in ToolHead</span>"
+        self.logger.raw( '{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
         return True
+
+    def _increase_unselect(self):
+        """
+        Helper function to lookup current selected extruder and increase tool unselected count
+        """
+        current_extruder = self.afc.function.get_current_extruder_obj()
+        if current_extruder:
+            current_extruder.estats.tool_unselected.increase_count()
 
     cmd_AFC_SELECT_TOOL_help = "Select specified tool"
     cmd_AFC_SELECT_TOOL_options = {
@@ -105,6 +116,8 @@ class AfcToolchanger(afcUnit):
         AFC_UNSELECT_TOOL
         ```
         """
+        self._increase_unselect()
+
         self.afc.gcode.run_script_from_command("UNSELECT_TOOL")
         lane_obj = self.afc.function.get_current_lane_obj()
         if lane_obj:
@@ -119,7 +132,7 @@ class AfcToolchanger(afcUnit):
 
         self.afc.spool.set_active_spool('')
 
-    def tool_swap(self, lane):
+    def tool_swap(self, lane: AFCLane, set_start_time=True):
         """
         Perform a tool swap operation for the specified lane.
 
@@ -128,10 +141,15 @@ class AfcToolchanger(afcUnit):
         to switch to the correct extruder. This is primarily used in multi-extruder/toolchanger setups.
 
         :param lane: The lane object whose extruder/toolhead should be activated.
+        :param set_start_time: Set true to set a starting time for afcDeltaTime.
 
         :return: None
         """
+        if set_start_time:
+            self.afc.afcDeltaTime.set_start_time()
+
         self.afc.current_state = State.TOOL_SWAP
+        self._increase_unselect()
         self.afc.function.log_toolhead_pos("Before toolswap: ")
         # Save the current position before switching tools and subtract offsets
         for i in range(0, 3):
@@ -145,10 +163,13 @@ class AfcToolchanger(afcUnit):
         # Switching toolhead extruders, this is mainly for setups with multiple extruders
         lane.activate_toolhead_extruder()
         # Need to call again since KTC activate callback happens before switching to new extruder
-        # Take double call out once transitioned away from KTC
+        # TODO: Take double call out once transitioned away from KTC
         self.afc.function._handle_activate_extruder(0)
 
-        self.afc.afcDeltaTime.log_with_time("Tool swap done")
+        self.afc.toolhead.wait_moves()
+        self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
+        if self.afc.afc_stats.average_tool_swap_time:
+            self.afc.afc_stats.average_tool_swap_time.average_time(self.afc.afcDeltaTime.delta_time)
         self.afc.current_state = State.IDLE
         # Update the base position and homing position after the tool swap.
         self.afc.base_position   = list(self.afc.gcode_move.base_position)
@@ -158,6 +179,7 @@ class AfcToolchanger(afcUnit):
             self.afc.last_gcode_position[i] += self.afc.gcode_move.base_position[i]
 
         self.afc.function.log_toolhead_pos("After toolswap: ")
+        lane.extruder_obj.estats.tool_selected.increase_count()
 
     cmd_AFC_SET_TOOLHEAD_LED_help = "Turns on leds for toolhead specified by mapping, does not affect status led if status_led_idx variable is provided"
     cmd_AFC_SET_TOOLHEAD_LED_options = {

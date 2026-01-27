@@ -270,6 +270,7 @@ class AFCExtruder:
         self.estats = AFCExtruderStats(self.name, self, self.afc.tool_cut_threshold)
 
         self.tool_start_state = False
+        # TODO: add a check here as pin_tool_start should always be required, or let klipper take care of it by not passing in None
         if self.tool_start is not None:
             if "unknown" == self.tool_start.lower():
                 raise error(f"Unknown is not valid for pin_tool_start in [{self.fullname}] config.")
@@ -355,6 +356,9 @@ class AFCExtruder:
         if self.name in self.lanes:
             self.no_lanes = True
             self.logger.info(f"{self.name} no lanes")
+            # Due to race conditions at startup, these variables might not be set correctly,
+            #  set to current tool start state
+            self.tc_lane.load_state = self.tc_lane.prep_state = self.tool_start_state
 
             if self.tool_start == "buffer":
                 raise error(

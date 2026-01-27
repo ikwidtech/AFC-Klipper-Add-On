@@ -17,11 +17,11 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from configfile import ConfigWrapper
+    from extras.AFC import afc
     from extras.AFC_extruder import AFCExtruder
     from extras.AFC_hub import afc_hub
     from extras.AFC_buffer import AFCTrigger
     from extras.AFC_unit import afcUnit
-    from extras.AFC import afc
 
 try: from extras.AFC_utils import ERROR_STR, add_filament_switch
 except: raise error("Error when trying to import AFC_utils.ERROR_STR, add_filament_switch\n{trace}".format(trace=traceback.format_exc()))
@@ -679,7 +679,6 @@ class AFCLane:
                     if self.afc.function.is_printing(check_movement=True):
                         self.afc.error.AFC_error("Cannot load spool to toolhead while printer is actively moving or homing", False)
                     else:
-                        self.afc.afcDeltaTime.set_start_time()
                         self.afc.TOOL_LOAD(self)
             else:
                 # Don't run if user disabled sensor in gui
@@ -751,7 +750,6 @@ class AFCLane:
                     #   This is only really a issue when using direct_load and still using load sensor
                     if self.hub == 'direct_load' and self.prep_state:
                         self.logger.debug(f"Prep: direct load logic-{self.name}-{self.hub}")
-                        self.afc.afcDeltaTime.set_start_time()
                         self.afc.TOOL_LOAD(self)
                         self.afc.spool._set_values(self)
                         self.logger.debug(f"Prep: direct load logic done-{self.name}-{self.hub}")
@@ -1147,7 +1145,7 @@ class AFCLane:
         Helper function for calling extruder's tool_swap function
         """
         if self.extruder_obj.tc_unit_obj is not None:
-            self.extruder_obj.tc_unit_obj.tool_swap(self)
+            self.extruder_obj.tc_unit_obj.tool_swap(self, set_start_time=False)
 
 
     def send_lane_data(self):
