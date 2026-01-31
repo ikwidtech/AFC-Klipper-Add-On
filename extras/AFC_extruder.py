@@ -262,6 +262,8 @@ class AFCExtruder:
         self.tool_obj                   = None
         self.map: Optional[str]         = config.get('map', None)
         self.no_lanes                   = False
+        self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
+        self.custom_unselect: Optional[str] = config.get("custom_unselect", None)
 
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
@@ -774,6 +776,11 @@ class AFCExtruder:
         # Return true if both are not set as this would be for single toolhead
         # setups
         if self.tool_obj is None and self.tc_unit_name is None:
+            return True
+
+        # Return true if toolchanger unit is defined but no tool object has been defined
+        # this could be because someone is using custom swap and unselect macros
+        if self.tc_unit_name and self.tool_obj is None:
             return True
 
         if hasattr(self.tool_obj, "detect_state"):
