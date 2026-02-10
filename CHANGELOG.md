@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [2026-02-09]
+### Added
+- The `update-afc.sh` and `install-afc.sh` script will now show a warning if it is unable to restart Klipper when either upgrading or installing the 
+software. 
+
 ## [2026-02-06]
 ### Added:
 - Adds homing-aware filament movement (new config flags homing_enabled, home_to_hub, home_to_tool); replaces many move/move_advanced calls with move_to (endstop-aware moves), updates calibration, load/unload and hub/tool flows, and adds type hints and small error/logging tweaks. Default homing behavior is enabled.

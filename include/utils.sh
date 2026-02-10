@@ -147,6 +147,8 @@ restart_service() {
 restart_klipper() {
   if query_printer_status; then
     restart_service klipper
+  else
+    print_msg WARNING "Your printer is not idle/ready, or its status could not be confirmed. Automatic Klipper restart has been skipped; please restart the Klipper service manually once the printer is idle."
   fi
 }
 
