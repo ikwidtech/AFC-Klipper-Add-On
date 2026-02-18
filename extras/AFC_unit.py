@@ -3,32 +3,57 @@
 # Copyright (C) 2024-2026 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import traceback
 
-from configfile import error
+from configfile import error as config_error
 from datetime import datetime, timedelta
 
+from typing import TYPE_CHECKING, Any, Dict
+
+if TYPE_CHECKING:
+    from extras.AFC_lane import (
+        afc, AFCLane, AssistActive,
+        AFCHomingPoints, MoveDirection
+    )
+    from extras.AFC_stepper import AFCExtruderStepper
+    from extras.AFC_buffer import AFCTrigger
+    from extras.AFC_hub import afc_hub
+    from extras.AFC_extruder import AFCExtruder
+
 try: from extras.AFC_utils import ERROR_STR
-except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
+except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
 try: from extras.AFC_respond import AFCprompt
-except: raise error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
+except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
+
+try: from extras.AFC_lane import SpeedMode, AssistActive, AFCHomingPoints
+except:
+    err_str = ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc())
+    raise config_error(err_str)
 
 class afcUnit:
+    HOMING_DELTA = 300  # Delta for which to warn if homing move delta is not within this amount from
+                        # command move distance.
     def __init__(self, config):
         self.printer        = config.get_printer()
         self.gcode          = self.printer.load_object(config, 'gcode')
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
-        self.afc            = self.printer.load_object(config, 'AFC')
+        self.afc: afc       = self.printer.load_object(config, 'AFC')
+        self.reactor        = self.printer.get_reactor()
+        self.function       = self.afc.function
         self.logger         = self.afc.logger
 
-        self.lanes      = {}
+        self.lanes: Dict[str, AFCLane] = {}
 
         # Objects
-        self.buffer_obj     = None
-        self.hub_obj        = None
-        self.extruder_obj   = None
+        self.buffer_obj: AFCTrigger = None
+        self.hub_obj: afc_hub       = None
+        self.extruder_obj: AFCExtruder  = None
+        self.drive_stepper_obj: AFCExtruderStepper = None
+        self.selector_stepper_obj: AFCExtruderStepper = None
 
         # Config get section
         self.full_name                   = config.get_name().split()
@@ -57,6 +82,7 @@ class afcUnit:
         self.short_move_dis              = config.getfloat("short_move_dis", self.afc.short_move_dis)       # Move distance in mm for failsafe moves. Setting value here overrides values set in AFC.cfg file
         self.max_move_dis                = config.getfloat("max_move_dis", self.afc.max_move_dis)            # Maximum distance to move filament. AFC breaks filament moves over this number into multiple moves. Useful to lower this number if running into timer too close errors when doing long filament moves. Setting value here overrides values set in AFC.cfg file
         self.homing_overshoot            = config.getfloat("homing_overshoot", 50)                           # Amount to add to homing distance so that distance is long enough to actually hit endstop
+        self.homing_delta                = config.getfloat("homing_delta", self.HOMING_DELTA)                # Delta for which to warn if homing move delta is not within this amount from command move distance.
         self.debug                       = config.getboolean("debug",            False)                      # Turns on/off debug messages to console
         self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", self.afc.rev_long_moves_speed_factor)
         self.extruder_clear_dis          = config.getfloat("extruder_clear_dis", 50)                        # Amount to move to clear extruder gears when ejecting filament
@@ -97,6 +123,26 @@ class afcUnit:
     def __str__(self):
         return self.name
 
+    def _check_and_errorout(
+            self, check_obj: Any, config_name: str, variable_name:str) -> tuple[bool, str]:
+        """
+        Helper method for checking if object was loaded correctly for specific variable
+
+        :param check_obj: Object to check if it's None
+        :param config_name: Config name to add into error string
+        :param variable_name: Variable name in config that caused error
+
+        :return tuple: Returns True of object is None and string is a common error string with
+                       config name, variable name and full name of current unit to aid in easily
+                       fixing a config issue.
+        """
+        error_string = f"Error: [{config_name}] config not found for {variable_name} in "\
+                       f"{self.full_name} config section. Please make sure [{config_name}] " \
+                       "section exists in your config.\n"
+        if check_obj is None:
+            return True, error_string
+        return False, ""
+
     def handle_connect(self):
         """
         Handles klippy:connect event, and does error checking to make sure users have hub/extruder/buffers sections if these variables are defined at the unit level
@@ -112,7 +158,7 @@ class afcUnit:
             except:
                 error_string = 'Error: No config found for hub: {hub} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_hub {hub}] section exists in your config'.format(
                 hub=self.hub, unit_type=self.type.replace("_", ""), unit_name=self.name )
-                raise error(error_string)
+                raise config_error(error_string)
 
         # Error checking for extruder
         if self.extruder is not None:
@@ -121,7 +167,7 @@ class afcUnit:
             except:
                 error_string = 'Error: No config found for extruder: {extruder} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_extruder {extruder}] section exists in your config'.format(
                     extruder=self.extruder, unit_type=self.type.replace("_", ""), unit_name=self.name )
-                raise error(error_string)
+                raise config_error(error_string)
 
         # Error checking for buffer
         if self.buffer_name is not None:
@@ -130,7 +176,7 @@ class afcUnit:
             except:
                 error_string = 'Error: No config found for buffer: {buffer} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_buffer {buffer}] section exists in your config'.format(
                     buffer=self.buffer_name, unit_type=self.type.replace("_", ""), unit_name=self.name )
-                raise error(error_string)
+                raise config_error(error_string)
 
         # Send out event so lanes can store units object
         self.printer.send_event("AFC_unit_{}:connect".format(self.name), self)
@@ -362,7 +408,7 @@ class afcUnit:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
 
-    def lane_loaded(self, lane):
+    def lane_loaded(self, lane: AFCLane):
         """
         Common function for setting a lanes led when lane is loaded
 
@@ -370,7 +416,7 @@ class afcUnit:
         """
         self.afc.function.afc_led(lane.led_ready, lane.led_index)
 
-    def lane_unloaded(self, lane):
+    def lane_unloaded(self, lane: AFCLane):
         """
         Common function for setting a lanes led when lane is unloaded
 
@@ -378,7 +424,7 @@ class afcUnit:
         """
         self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
 
-    def lane_loading(self, lane):
+    def lane_loading(self, lane: AFCLane):
         """
         Common function for setting a lanes led when lane is loading
 
@@ -386,7 +432,7 @@ class afcUnit:
         """
         self.afc.function.afc_led(lane.led_loading, lane.led_index)
 
-    def lane_tool_loaded(self, lane):
+    def lane_tool_loaded(self, lane: AFCLane):
         """
         Common function for setting a lanes led when lane is tool loaded
 
@@ -394,7 +440,7 @@ class afcUnit:
         """
         self.afc.function.afc_led(lane.led_tool_loaded, lane.led_index)
 
-    def lane_tool_unloaded(self, lane):
+    def lane_tool_unloaded(self, lane: AFCLane):
         """
         Common function for setting a lanes led when lane is tool unloaded
 
@@ -403,13 +449,17 @@ class afcUnit:
         self.afc.function.afc_led(lane.led_ready, lane.led_index)
         return
 
-    def select_lane( self, lane ):
+    def select_lane( self, lane: AFCLane, sel_prep:bool=False ):
         """
-        Function to select lane
+        Common method to select a units lane.
+
+        Override in unit specific file if needed
+
+        :param lane: AFCLane object for lane to select
+        :param sel_prep: Set to true is selection is happing during prep macro
         """
         return
-
-    def return_to_home(self ):
+    def return_to_home(self):
         """
         Function to home unit if unit has homing sensor
         """
@@ -446,6 +496,9 @@ class afcUnit:
 
     def calibrate_lane(self, cur_lane, tol):
         self._print_function_not_defined(self.calibrate_lane.__name__)
+
+    def calibration_lane_message(self) -> str:
+        return ""
 
     def get_td1_data(self, cur_lane, compare_time):
         """
@@ -499,4 +552,82 @@ class afcUnit:
                 self.logger.info(f"{cur_lane.name} TD-1 data captured")
                 self.afc.save_vars()
                 return True
-        return False
+
+    def prep_load(self, lane: AFCLane):
+        """
+        Helper method for initially loading spools when prep sensor is triggered.
+        Need to override in specific unit
+
+        See unit specific function for how this is unique per unit type.
+
+        :param lane: AFCLane object for which to activate and load filament to load sensor
+        """
+        self._print_function_not_defined(self.eject_lane.__name__)
+
+    def prep_post_load(self, lane: AFCLane):
+        """
+        Helper method to run after prep_load has been successful for a specific unit.
+        Need to override in specific unit
+
+        See unit specific function for how this is unique per unit type.
+
+        :param lane: AFCLane object for which to perform prep_post_load action on
+        """
+        self._print_function_not_defined(self.prep_post_load.__name__)
+
+    def eject_lane(self, lane: AFCLane):
+        """
+        Method to eject spool from Unit/lane.
+        Need to override in specific unit
+
+        :param lane: AFCLane object for which to perform eject action on
+        """
+        self._print_function_not_defined(self.eject_lane.__name__)
+
+    def move_to_hub(self, lane: AFCLane, dist: float,
+                    dir:MoveDirection, use_homing=True,
+                    speedMode=SpeedMode.HUB,
+                    assist_active=AssistActive.DYNAMIC) -> tuple[bool, float|int, bool]:
+        """
+        Helper method to move filament to hub sensor, calls lanes move_to method with HUB as trigger
+        point when homing is enabled.
+
+        This can be overridden if needed for unit specific functionality
+
+        :param lane: AFCLane object to move
+        :param dist: Distance in mm to move filament
+        :param dir: Direction(+/-) to move filament
+        :param use_homing: When enabled home_to logic is used, else move_advance logic is used
+        :param speedMode: SpeedMode type to use when moving stepper
+        :param assist_active: Set appropriate to enabled/disable or use Dynamic logic to enabled/disable
+                              spoolers based off move distance.
+
+        :return tuple: Returns if move was successful, distance moved, and boolean set to true if
+                movement moved is not within 300mm of total distance. When homing is
+                disabled, always returns True, 0, False.
+        """
+        return lane.move_to(dist * dir, speedMode, assist_active=assist_active,
+                            endstop=AFCHomingPoints.HUB, use_homing=use_homing)
+
+    def move_to_load(self, lane: AFCLane, dist: float,
+                     dir: MoveDirection, use_homing=True) -> tuple[bool, float|int, bool]:
+        """
+        Helper method to move filament to load sensor, calls lane's move_to method with the load
+        sensor endpoint (lane.load_es) as trigger point when homing is enabled.
+
+        This can be overridden if needed for unit specific functionality
+
+        Active assist and set to Dynamic and SpeedMode is set to Long when calling lanes move_to
+        method.
+
+        :param lane: AFCLane object to move
+        :param dist: Distance in mm to move filament
+        :param dir: Direction(+/-) to move filament
+        :param use_homing: When enabled home_to logic is used, else move_advance logic is used
+
+        :return tuple: Returns if move was successful, distance moved, and boolean set to true if
+                       movement moved is not within 300mm of total distance. When homing is
+                       disabled, always returns True, 0, False.
+        """
+        return lane.move_to(dist * dir, SpeedMode.LONG, endstop=lane.load_es,
+                            assist_active=AssistActive.DYNAMIC, use_homing=use_homing)

@@ -468,7 +468,9 @@ class AFCExtruderStepper(AFCLane):
         buffer_adv_pin   = self._get_section_value('AFC_buffer', buffer_name, 'advance_pin')
         buffer_trail_pin = self._get_section_value('AFC_buffer', buffer_name, 'trailing_pin')
 
-        self._add_endstop('hub', hub_pin, 'hub')
+        # Check to verify that hub is not a virtual sensor
+        if hub_pin.lower() != "virtual":
+            self._add_endstop('hub', hub_pin, 'hub')
         if tool_start_pin != 'buffer':
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
         else:
@@ -509,7 +511,8 @@ class AFCExtruderStepper(AFCLane):
                         self.logger.debug(f"Inherited '{target_key}'='{value}' from section '{sec}' for unit '{unit}' {self.name}")
                     return value
         except Exception as e:
-            self.logger.debug(f"_inherit_from_unit({target_key}) failed: {e}", exc_info=True)
+            err_str = f"_inherit_from_unit({target_key}) failed: {e}"
+            self.logger.debug(err_str)
 
         return None
 
@@ -533,13 +536,14 @@ class AFCExtruderStepper(AFCLane):
             self.logger.debug(f"Missing or invalid section '{section}': {e}")
             return default
 
-    def _add_endstop(self, key: str, pin: str, suffix: str):
+    def _add_endstop(self, key: str, pin: str, suffix: str, fullname:str=None):
         """
         Helper to create/register an endstop and bind it to the drive stepper.
 
         :param key: Endstop key name to register for stepper
         :param pin: Pin to register as endstop for stepper
         :param suffix: String to append at end of endstop key
+        :param fullname: Fullname to register endstop name as
         """
         if pin is None:
             self.logger.info(f"Pin for {key} is none for {self.name}")
@@ -555,7 +559,9 @@ class AFCExtruderStepper(AFCLane):
             return
 
         single_key_aliases = {'hub', 'tool_start', 'tool_end', 'buffer_advance', 'buffer_trailing'}
-        if key in single_key_aliases:
+        if fullname:
+            name = fullname
+        elif key in single_key_aliases:
             name = '{}'.format(suffix)
         else:
             name = '{}_{}'.format(self.name, suffix)
@@ -573,10 +579,6 @@ class AFCExtruderStepper(AFCLane):
         self.logger.debug(f"{self.name} adding endstop {key}:{name}:{pin}") # TODO:remove once fully tested on toolchanger
         self._endstops[key] = (mcu_endstop, name)
 
-    # def handle_unit_connect(self, unit_obj):
-    #     """Extend AFCLane hook. Hub endstop is already registered at config time."""
-    #     super().handle_unit_connect(unit_obj)
-
     def do_homing_move(self, movepos: int, speed: int, accel: int, endstop_spec:str,
                        triggered=True, check_trigger=True, assist_active=True) -> tuple[bool, float]:
         """
@@ -586,6 +588,7 @@ class AFCExtruderStepper(AFCLane):
         :param speed/accel: motion params (fallbacks applied if None)
         :param endstop_spec: 'load' | raw pin string
         :param triggered/check_trigger: same semantics as manual_stepper
+        :param assist_active: When true espoolers(if configured) activate during homing move
         :return tuple: When homing is success returns True and distance moved.
                        If homing failed returns False and move pos as distance moved.
         """
@@ -593,7 +596,6 @@ class AFCExtruderStepper(AFCLane):
         start_ts = reactor.monotonic()
 
         try:
-
             self.logger.debug(f"[AFC_stepper:{self.name}] Homing start endstop={endstop_spec} movepos={movepos} speed={speed} accel={accel}")
         except Exception:
             pass
@@ -609,13 +611,12 @@ class AFCExtruderStepper(AFCLane):
         pos = [movepos, 0., 0., 0.]
 
         phoming = self.printer.lookup_object('homing')
-
         # Try to get a real MCU-backed endstop
         try:
             endstop = self._resolve_endstop_pin(endstop_spec)
         except Exception as e_resolve:
-            self.logger.debug(f"ENDSTOP '{endstop_spec}' could not be resolved ({e_resolve})")
             raise_string = f"ENDSTOP '{endstop_spec}' could not be resolved ({e_resolve})"
+            self.logger.debug(raise_string)
             raise self.gcode.error(raise_string)
 
         # Try MCU-based homing first
@@ -637,11 +638,12 @@ class AFCExtruderStepper(AFCLane):
                 # However, the Homing manager's trigger_mcu_pos is absolute; compute delta from current mcu pos as a proxy for short homing moves.
                 steps_moved = abs(trig_mcu_pos - start_mcu_pos)
                 dist_mm = steps_moved * step_dist
-                self.logger.debug(f"AFC lane '{self.name}': endstop '{endstop_spec}' trigger after {dist_mm:.3f} mm (steps={steps_moved})")
             except Exception as e:
                 self.logger.debug(f"Exception {e}")
                 pass
-            self.logger.debug(f"Homed lane '{self.name}' to ENDSTOP='{endstop_spec}' at position {self._manual_axis_pos:.2f}mm (dt={(end_ts-start_ts):.3f}s)")
+            self.logger.debug(f"Homed lane {self.name}'to ENDSTOP={endstop_spec} trigger after "\
+                              f"{dist_mm:.3f}mm (steps={steps_moved} dt={(end_ts-start_ts):.3f}s")
+
             return True, dist_mm
         except Exception as e:
             msg = str(e).lower()
@@ -692,7 +694,6 @@ class AFCExtruderStepper(AFCLane):
             raise self.gcode.error("home_to requires an explicit distance; use home_to_hub/toolhead/buffer for sensible defaults")
         # Compute an absolute target along our 1D axis
         target = float(self._manual_axis_pos + float(distance))
-        self.logger.debug(f"Homing lane '{self.name}' to ENDSTOP='{endstop_spec}' at position {distance:.2f}mm")
         homed = False
         move_distance = 0
         try:
@@ -774,8 +775,8 @@ class AFCExtruderStepper(AFCLane):
                                 endstop_spec,
                                 triggered = homing_move > 0,
                                 check_trigger = abs(homing_move) == 1)
-        elif gcmd.get_float('MOVE', None) is not None:
-            movepos = gcmd.get_float('MOVE')
+        elif gcmd.get_float('DIST', None) is not None:
+            movepos = gcmd.get_float('DIST')
             sync = gcmd.get_int('SYNC', 1)
             # Implement simple absolute-position move using our pipeline
             delta = movepos - self._manual_axis_pos

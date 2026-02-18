@@ -3,15 +3,21 @@
 # Copyright (C) 2024-2026 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import traceback
 
-from configparser import Error as error
+from configparser import Error as config_error
+from typing import TYPE_CHECKING, Dict
 
 try: from extras.AFC_utils import ERROR_STR
-except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
+except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
 try: from extras.AFC_utils import add_filament_switch
-except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+except: raise config_error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+
+if TYPE_CHECKING:
+    from extras.AFC_lane import AFCLane
 
 class afc_hub:
     def __init__(self, config):
@@ -24,8 +30,8 @@ class afc_hub:
         self.name       = self.fullname.split()[-1]
 
         self.unit = None
-        self.lanes = {}
-        self.state = False
+        self.lanes: Dict[str, AFCLane] = {}
+        self._state: bool = False
 
         # HUB Cut variables
         # Next two variables are used in AFC
@@ -54,12 +60,12 @@ class afc_hub:
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
 
-        buttons = self.printer.load_object(config, "buttons")
-        self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
-                                                                self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
-                                                                self.debounce_delay)
-        self.state = False
-        buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
+        if self.switch_pin.lower() != "virtual":
+            buttons = self.printer.load_object(config, "buttons")
+            self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
+                                                                    self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
+                                                                    self.debounce_delay)
+            buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -96,8 +102,30 @@ class afc_hub:
 
         self.printer.send_event("afc_hub:register_macros", self)
 
+        if self.switch_pin.lower() == "virtual":
+            msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
+            report_error = False
+            for lane in self.lanes.values():
+                if lane.load is None:
+                    report_error = True
+                    msg += f"\n{lane.fullname}"
+
+            if report_error:
+                raise config_error(msg)
+
+    @property
+    def state(self):
+        """
+        Returns current state of switch. If using virtual sensor returns True if any lanes load
+        sensor is triggered.
+        """
+        state = self._state
+        if self.switch_pin.lower() == "virtual":
+            state = any(lane._load_state for lane in self.lanes.values())
+        return state
+
     def switch_pin_callback(self, eventtime, state):
-        self.state = state
+        self._state = state
 
     def hub_cut(self, cur_lane):
         servo_string = 'SET_SERVO SERVO={servo} ANGLE={{angle}}'.format(servo=self.cut_servo_name)
