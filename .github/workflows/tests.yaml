@@ -66,10 +66,18 @@ jobs:
           retention-days: 30
 
   # ------------------------------------------------------------------
-  # Klippy integration tests (runs AFC under a real Klipper process)
+  # Klippy integration tests (runs AFC under a real Klipper/Kalico process)
   # ------------------------------------------------------------------
   klippy-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware:
+          - name: klipper
+            repo: https://github.com/Klipper3d/klipper.git
+          - name: kalico
+            repo: https://github.com/KalicoCrew/kalico.git
 
     steps:
       - uses: actions/checkout@v4
@@ -87,16 +95,16 @@ jobs:
       - name: Install Python test dependencies
         run: .venv/bin/pip install -r requirements.txt
 
-      # Klipper is not on PyPI — clone it so we can run "python -m klippy".
-      - name: Clone Klipper
-        run: git clone --depth 1 https://github.com/Klipper3d/klipper.git klipper
+      # Clone into klipper/ regardless of variant so KLIPPER_PATH needs no change.
+      - name: Clone ${{ matrix.firmware.name }}
+        run: git clone --depth 1 ${{ matrix.firmware.repo }} klipper
 
-      - name: Install Klipper Python dependencies
+      - name: Install klippy Python dependencies
         run: .venv/bin/pip install -r klipper/scripts/klippy-requirements.txt
 
-      # chelper is a C extension that Klipper compiles at runtime.
-      # Build it now so the klippy subprocess can use it.
-      - name: Build Klipper chelper
+      # chelper is a C extension compiled at runtime. Kalico does not ship
+      # build_chelper.py, so the fallback chain handles both variants.
+      - name: Build chelper
         run: |
           cd klipper
           python scripts/build_chelper.py 2>/dev/null || \
@@ -126,14 +134,13 @@ jobs:
           DICTDIR: ${{ github.workspace }}/tests/dict
         run: |
           .venv/bin/python -m pytest tests/klippy/ -v \
-            --junitxml=klippy-test-results.xml
-
+            --junitxml=klippy-test-results-${{ matrix.firmware.name }}.xml
 
       - name: Upload klippy test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: klippy-test-results
-          path: klippy-test-results.xml
+          name: klippy-test-results-${{ matrix.firmware.name }}
+          path: klippy-test-results-${{ matrix.firmware.name }}.xml
           if-no-files-found: warn
           retention-days: 30

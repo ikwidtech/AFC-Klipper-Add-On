@@ -167,7 +167,7 @@ cp klipper/out/klipper.dict tests/dict/stm32h723.dict
 > The `klipper.dict` file is produced before linking, so the `|| true` keeps the
 > build going. The final `test` command in CI verifies the dict was produced.
 
-#### Running the integration tests
+#### Running against Klipper
 
 ```shell
 KLIPPER_PATH=$(pwd)/klipper \
@@ -175,7 +175,48 @@ DICTDIR=$(pwd)/tests/dict \
 python -m pytest tests/klippy/ -v
 ```
 
-To run both unit and integration tests together in one command:
+#### Running against Kalico
+
+Kalico (a Klipper fork by KalicoCrew) can be tested the same way. Clone it
+alongside the existing `klipper/` directory, then point `KLIPPER_PATH` at it.
+
+**1. Clone Kalico:**
+
+```shell
+git clone --depth 1 https://github.com/KalicoCrew/kalico.git kalico
+```
+
+**2. Install Kalico's Python dependencies:**
+
+```shell
+pip install -r kalico/scripts/klippy-requirements.txt
+```
+
+**3. Build chelper** (Kalico does not ship `build_chelper.py`; import it directly):
+
+```shell
+python kalico/klippy/chelper/__init__.py
+```
+
+**4. Build the STM32H723 MCU dictionary from Kalico:**
+
+```shell
+cp tests/klippy/stm32h723.config kalico/.config
+make -C kalico olddefconfig
+make -C kalico || true
+mkdir -p tests/dict
+cp kalico/out/klipper.dict tests/dict/stm32h723.dict
+```
+
+**5. Run the tests:**
+
+```shell
+KLIPPER_PATH=$(pwd)/kalico \
+DICTDIR=$(pwd)/tests/dict \
+python -m pytest tests/klippy/ -v
+```
+
+#### Running both unit and integration tests together
 
 ```shell
 KLIPPER_PATH=$(pwd)/klipper \
