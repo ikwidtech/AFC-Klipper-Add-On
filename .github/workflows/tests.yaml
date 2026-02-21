@@ -48,17 +48,6 @@ jobs:
             --cov-report=xml:coverage.xml \
             --junitxml=test-results.xml
 
-      - name: Post coverage comment on PR
-        if: github.event_name == 'pull_request'
-        uses: MishaKav/pytest-coverage-comment@main
-        with:
-          pytest-xml-coverage-path: coverage.xml
-          junitxml-path: test-results.xml
-          title: Coverage Report
-          badge-title: Coverage
-          report-only-changed-files: 'true'
-          hide-report: 'true'
-
       - name: Write coverage summary to job log
         if: always()
         run: |
