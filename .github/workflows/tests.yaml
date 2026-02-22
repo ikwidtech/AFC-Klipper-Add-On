@@ -102,14 +102,10 @@ jobs:
       - name: Install klippy Python dependencies
         run: .venv/bin/pip install -r klipper/scripts/klippy-requirements.txt
 
-      # chelper is a C extension compiled at runtime. Kalico does not ship
-      # build_chelper.py, so the fallback chain handles both variants.
       - name: Build chelper
         run: |
           cd klipper
-          python klippy/chelper/__init__.py 2>/dev/null || \
-            make PYTHON=$(pwd)/../.venv/bin/python scripts/build_chelper.py || \
-            true  # chelper may auto-build on first import; continue
+          python klippy/chelper/__init__.py 2>/dev/null 
 
       # Install the ARM cross-compiler toolchain needed to build STM32H723 firmware.
       - name: Install ARM cross-compiler
