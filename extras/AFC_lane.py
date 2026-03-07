@@ -1,5 +1,6 @@
 # Armored Turtle Automated Filament Changer
 #
+# Copyright (C) 2024 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
@@ -12,6 +13,7 @@ from configfile import error
 from datetime import datetime
 from enum import Enum
 
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from extras.AFC import afc
 
@@ -62,10 +64,13 @@ class AFCLane:
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.cb_update_weight   = self.reactor.register_timer( self.update_weight_callback )
 
+        self.unit_obj           = None
+        self.hub_obj            = None
         self.buffer_obj         = None
         self.extruder_obj       = None
 
         #stored status variables
+        self.fullname           = config.get_name()
         self.name               = self.fullname.split()[-1]
         # TODO: Put these variables into a common class or something so they are easier to clear out
         # when lanes are unloaded
@@ -83,8 +88,12 @@ class AFCLane:
         # END TODO
 
         self.multi_hubs_found   = False
+        self.drive_stepper      = None
+        unit                    = config.get('unit')                                    # Unit name(AFC_BoxTurtle/NightOwl/etc) that belongs to this stepper.
         # Overrides buffers set at the unit level
+        self.hub                = config.get('hub',None)                                # Hub name(AFC_hub) that belongs to this stepper, overrides hub that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
         # Overrides buffers set at the unit and extruder level
+        self.buffer_name        = config.get("buffer", None)                            # Buffer name(AFC_buffer) that belongs to this stepper, overrides buffer that is set in extruder(AFC_extruder) or unit(AFC_BoxTurtle/NightOwl/etc) sections.
         self.unit               = unit.split(':')[0]
         try:
             self.index              = int(unit.split(':')[1])
@@ -108,11 +117,38 @@ class AFCLane:
         self.led_spool_index    = config.get('led_spool_index', None)                   # LED index to illuminate under spool
         self.led_spool_illum    = config.get('led_spool_illuminate', None)              # LED color to illuminate under spool
 
+        self.long_moves_speed   = config.getfloat("long_moves_speed", None)             # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.long_moves_accel   = config.getfloat("long_moves_accel", None)             # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.short_moves_speed  = config.getfloat("short_moves_speed", None)            # Speed in mm/s to move filament when doing short moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.short_moves_accel  = config.getfloat("short_moves_accel", None)            # Acceleration in mm/s squared when doing short moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.short_move_dis     = config.getfloat("short_move_dis", None)               # Move distance in mm for failsafe moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.max_move_dis       = config.getfloat("max_move_dis", None)                 # Maximum distance to move filament. AFC breaks filament moves over this number into multiple moves. Useful to lower this number if running into timer too close errors when doing long filament moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.n20_break_delay_time= config.getfloat("n20_break_delay_time", None)        # Time to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+
+        self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", None)     # scalar speed factor when reversing filamentalist
+
+        self.dist_hub           = config.getfloat('dist_hub', 60)                       # Bowden distance between Box Turtle extruder and hub
+        self.park_dist          = config.getfloat('park_dist', 10)                      # Currently unused
+        # --- Servo selector overrides (optional; used by AFC_PICOMMU / servo selectors) ---
+        self.selector_angle      = config.getfloat('selector_angle', None)              # Absolute selector angle (deg) for this lane
+        self.selector_servo      = config.get('selector_servo', None)                   # Optional per-lane servo override
+        # Per-lane drive direction multiplier (useful for 2-lane single-drive MMUs where filament approaches the drive from opposite sides)
+        #  1 = normal, -1 = reversed
+        self.drive_dir           = config.getint('drive_dir', 1)
+        if self.drive_dir not in (-1, 1):
+            raise error("drive_dir must be 1 or -1 for lane {}".format(self.name))
 
 
 
+        self.load_to_hub        = config.getboolean("load_to_hub", self.afc.load_to_hub) # Fast loads filament to hub when inserted, set to False to disable. Setting here overrides global setting in AFC.cfg
+        self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show prep and load sensors switches as filament sensors in mainsail/fluidd gui, overrides value set in AFC.cfg
+        self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
+        self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
+        self.sensor_to_show         = config.get("sensor_to_show", None)                # Set to prep to only show prep sensor, set to load to only show load sensor. Do not add if you want both prep and load sensors to show in web gui
 
-
+        self.assisted_unload    = config.getboolean("assisted_unload", None) # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.td1_when_loaded    = config.getboolean("capture_td1_when_loaded", None)
+        self.td1_device_id      = config.get("td1_device_id", None)
 
 
         self.printer.register_event_handler("AFC_unit_{}:connect".format(self.unit),self.handle_unit_connect)
@@ -127,12 +163,22 @@ class AFCLane:
             buttons.register_buttons([self.prep], self.prep_callback)
 
         self.load = config.get('load', None)                                    # MCU pin load trigger
+        self.load_state = False
         if self.load is not None:
             buttons.register_buttons([self.load], self.load_callback)
+        else: self.load_state = True
 
         self.espooler = AFC_assist.Espooler(self.name, config)
         self.lane_load_count = None
 
+        self.filament_diameter  = config.getfloat("filament_diameter", 1.75)    # Diameter of filament being used
+        self.filament_density   = config.getfloat("filament_density", 1.24)     # Density of filament being used
+        self.inner_diameter     = config.getfloat("spool_inner_diameter", 75, minval=1)   # Inner diameter in mm
+        self.outer_diameter     = config.getfloat("spool_outer_diameter", 200, minval=100)  # Outer diameter in mm
+        self.empty_spool_weight = config.getfloat("empty_spool_weight", 190, minval=1)    # Empty spool weight in g
+        self.max_motor_rpm      = config.getfloat("assist_max_motor_rpm", 465)  # Max motor RPM
+        self.rwd_speed_multi    = config.getfloat("rwd_speed_multiplier", 0.5)  # Multiplier to apply to rpm
+        self.fwd_speed_multi    = config.getfloat("fwd_speed_multiplier", 0.5)  # Multiplier to apply to rpm
         self.diameter_range     = self.outer_diameter - self.inner_diameter     # Range for effective diameter
         self.past_extruder_position = -1
         self.save_counter       = -1
@@ -149,6 +195,7 @@ class AFCLane:
                                                                             debounce_delay=self.debounce_delay )
             self.prep_debounce_button.button_action = self.handle_prep_runout
             self.prep_debounce_button.debounce_delay = 0 # Delay will be set once klipper is ready
+
         if self.load is not None:
             show_sensor = True
             if not self.enable_sensors_in_gui or (self.sensor_to_show is not None and 'load' not in self.sensor_to_show):
@@ -222,6 +269,7 @@ class AFCLane:
         enough time to start before AFC tries to connect. This fixes a race condition that can
         happen between klipper and moonraker when first starting up.
         """
+        if self.unit_obj.type not in ("HTLF", "PICOMMU") or (self.unit_obj.type in ("HTLF", "PICOMMU") and "AFC_lane" in self.fullname):
             values = self.afc.moonraker.get_afc_stats()
             self.lane_load_count = AFCStats_var(self.name, "load_count", values, self.afc.moonraker)
             self.espooler.handle_moonraker_connect()
@@ -234,11 +282,13 @@ class AFCLane:
         Callback from <unit_name>:connect to verify units/hub/buffer/extruder object. Errors out if user specified names and they do not exist in their configuration
         """
         # Saving reference to unit
+        self.unit_obj = unit_obj
         self.buffer_obj = self.unit_obj.buffer_obj
         add_to_other_obj = False
 
         # Register all lanes if their type is not HTLF or only register lanes that are HTLF and have AFC_lane
         # in the name so that HTLF stepper names do not get added since they are not a lane for this unit type
+        if self.unit_obj.type not in ("HTLF", "PICOMMU") or (self.unit_obj.type in ("HTLF", "PICOMMU") and "AFC_lane" in self.fullname):
             add_to_other_obj = True
             # Registering lane name in unit
             self.unit_obj.lanes[self.name] = self
@@ -255,8 +305,22 @@ class AFCLane:
                     error_string = 'Error: No config found for hub: {hub} in [AFC_stepper {stepper}]. Please make sure [AFC_hub {hub}] section exists in your config'.format(
                     hub=self.hub, stepper=self.name )
                     raise error(error_string)
+            elif self.hub_obj is None:
+                # Check to make sure at least 1 hub exists in config, if not error out with message
+                if len(self.afc.hubs) == 0:
+                    error_string = "Error: AFC_hub not found in configuration please make sure there is a [AFC_hub <hub_name>] defined in your configuration"
+                    raise error(error_string)
+                # Setting hub to first hub in AFC hubs dictionary
+                if len(self.afc.hubs) > 0:
+                    self.hub_obj = next(iter(self.afc.hubs.values()))
+                # Set flag to warn during prep that multiple hubs were found
+                if len(self.afc.hubs) > 1:
+                    self.multi_hubs_found = True
 
             # Assigning hub name just in case stepper is using hub defined in units config
+            self.hub = self.hub_obj.name
+            if add_to_other_obj:
+                self.hub_obj.lanes[self.name] = self
         else:
             self.hub_obj = lambda: None
             self.hub_obj.state = False
@@ -304,6 +368,8 @@ class AFCLane:
             # Assigning buffer name just in case stepper is using buffer defined in units/extruder config
             self.buffer_name = self.buffer_obj.name
 
+        self.get_steppers()
+
         if self.led_fault           is None: self.led_fault         = self.unit_obj.led_fault
         if self.led_ready           is None: self.led_ready         = self.unit_obj.led_ready
         if self.led_not_ready       is None: self.led_not_ready     = self.unit_obj.led_not_ready
@@ -334,6 +400,11 @@ class AFCLane:
 
         # Register macros
         # TODO: add check so that HTLF stepper lanes do not get registered here
+        self.afc.gcode.register_mux_command('SET_LONG_MOVE_SPEED',   "LANE", self.name, self.cmd_SET_LONG_MOVE_SPEED, desc=self.cmd_SET_LONG_MOVE_SPEED_help)
+        self.afc.gcode.register_mux_command('SET_SPEED_MULTIPLIER',  "LANE", self.name, self.cmd_SET_SPEED_MULTIPLIER, desc=self.cmd_SET_SPEED_MULTIPLIER_help)
+        self.afc.gcode.register_mux_command('SAVE_SPEED_MULTIPLIER', "LANE", self.name, self.cmd_SAVE_SPEED_MULTIPLIER, desc=self.cmd_SAVE_SPEED_MULTIPLIER_help)
+        self.afc.gcode.register_mux_command('SET_HUB_DIST',          "LANE", self.name, self.cmd_SET_HUB_DIST, desc=self.cmd_SET_HUB_DIST_help)
+        self.afc.gcode.register_mux_command('SAVE_HUB_DIST',         "LANE", self.name, self.cmd_SAVE_HUB_DIST, desc=self.cmd_SAVE_HUB_DIST_help)
 
         if self.assisted_unload is None: self.assisted_unload = self.unit_obj.assisted_unload
 
@@ -342,8 +413,11 @@ class AFCLane:
 
         self.connect_done = True
 
+    def get_steppers(self):
         """
+        Helper function to get steppers for lane
         """
+        if self.unit_obj.type in ("HTLF", "PICOMMU") and "AFC_lane" in self.fullname:
             self.drive_stepper      = self.unit_obj.drive_stepper_obj
             self.extruder_stepper   = self.drive_stepper.extruder_stepper
 
@@ -412,8 +486,10 @@ class AFCLane:
                 return self.afc.quiet_moves_speed, self.short_moves_accel
             elif mode == SpeedMode.LONG:
                 return self.long_moves_speed, self.long_moves_accel
+            elif mode == SpeedMode.SHORT:
                 return self.short_moves_speed, self.short_moves_accel
             else:
+                return self.dist_hub_move_speed, self.dist_hub_move_accel
 
     def move(self, distance, speed, accel, assist_active=False):
         """
@@ -445,6 +521,11 @@ class AFCLane:
         """
         speed, accel = self.get_speed_accel(speed_mode)
 
+        assist = False
+        if assist_active == AssistActive.YES:
+            assist = True
+        elif assist_active == AssistActive.DYNAMIC:
+            assist = abs(distance) > 200
 
         self.move(distance, speed, accel, assist)
 
@@ -535,10 +616,11 @@ class AFCLane:
 
 
     def load_callback(self, eventtime, state):
-        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
+        self.load_state = state
         if self.printer.state_message == 'Printer is ready' and self.unit_obj.type in ("HTLF", "PICOMMU"):
             self.prep_state = state
 
+    def handle_load_runout(self, eventtime=None, load_state=None, is_filament_present=None):
         """
         Callback function for load switch runout/loading for HTLF, this is different than `load_callback`
         function as this function can be delayed and is called from filament_switch_sensor class when it detects a runout event.
@@ -549,6 +631,15 @@ class AFCLane:
 
         :param eventtime: Event time from the button press
         """
+        # Support both AFC/Klipper callback styles:
+        # - older: button_action(eventtime, state)
+        # - newer: button_action(is_filament_present=state)
+        if load_state is None and is_filament_present is not None:
+            load_state = is_filament_present
+        if eventtime is None:
+            # eventtime is only used for compatibility calls into the original note_filament_present
+            eventtime = 0.0
+
         # Call filament sensor callback so that state is registered
         try:
             self.load_debounce_button._old_note_filament_present(is_filament_present=load_state)
@@ -556,7 +647,6 @@ class AFCLane:
             self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
         if (self.printer.state_message == 'Printer is ready' and
-            self.unit_obj.type == "HTLF" and
             self.unit_obj.type in ("HTLF", "PICOMMU") and
             True == self._afc_prep_done):
             if load_state:
@@ -570,6 +660,13 @@ class AFCLane:
                 # Don't run if user disabled sensor in gui
                 if not self.fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
                     self.logger.warning("Load runout has been detected, but pause and runout detection has been disabled")
+                else:
+                    try:
+                        _do_runout = self.unit_obj.check_runout(self)
+                    except TypeError:
+                        _do_runout = self.unit_obj.check_runout()
+                
+                if _do_runout:
                     # Checking to make sure runout_lane is set
                     if self.runout_lane is not None:
                         self._perform_infinite_runout()
@@ -605,10 +702,60 @@ class AFCLane:
         for i in range(1):
             # Hacky way for do{}while(0) loop, DO NOT return from this for loop, use break instead so that self.prep_state variable gets sets correctly
             #  before exiting function
+            if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
+                # Only try to load when load state trigger is false
+                if self.prep_state == True and self.load_state == False:
+                    x = 0
+                    # Checking to make sure last time prep switch was activated was less than 1 second, returning to keep is printing message from spamming
+                    # the console since it takes klipper some time to transition to idle when idle_resume=printing
+                    if delta_time < 1.0:
+                        break
+
+                    # Check to see if the printer is printing or moving, as trying to load while printer is doing something will crash klipper
+                    if self.afc.function.is_printing(check_movement=True):
+                        self.afc.error.AFC_error("Cannot load spools while printer is actively moving or homing", False)
+                        break
+
+                    while self.load_state == False and self.prep_state == True and self.load is not None:
+                        x += 1
+                        self.move(10,500,400)
+                        self.reactor.pause(self.reactor.monotonic() + 0.1)
+                        if x> 40:
+                            msg = ' FAILED TO LOAD, CHECK FILAMENT AT TRIGGER\n||==>--||----||------||\nTRG   LOAD   HUB    TOOL'
+                            self.afc.error.AFC_error(msg, False)
+                            self.afc.function.afc_led(self.afc.led_fault, self.led_index)
+                            self.status = AFCLaneState.NONE
                             break
+                    self.status = AFCLaneState.NONE
 
+                    # Verify that load state is still true as this would still trigger if prep sensor was triggered and then filament was removed
+                    #   This is only really a issue when using direct and still using load sensor
+                    if self.hub == 'direct' and self.prep_state:
+                        self.afc.afcDeltaTime.set_start_time()
+                        self.afc.TOOL_LOAD(self)
+                        self.material = self.afc.default_material_type
+                        break
 
+                    # Checking if loaded to hub(it should not be since filament was just inserted), if false load to hub. Does a fast load if hub distance is over 200mm
+                    if self.load_to_hub and not self.loaded_to_hub and self.load_state and self.prep_state:
+                        self.move(self.dist_hub, self.dist_hub_move_speed, self.dist_hub_move_accel, self.dist_hub > 200)
+                        self.loaded_to_hub = True
 
+                    self.do_enable(False)
+                    if self.load_state == True and self.prep_state == True:
+                        self.status = AFCLaneState.LOADED
+                        self.unit_obj.lane_loaded(self)
+                        self.afc.spool._set_values(self)
+                        # Check if user wants to get TD-1 data when loading
+                        # TODO: When implementing multi-extruder this could still happen if a lane is loaded for a
+                        # different extruder/hub
+                        self._prep_capture_td1()
+
+                elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
+                    message = 'Cannot load {} load sensor is triggered.'.format(self.name)
+                    message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
+                    message += '\n    Once cleared try loading again'
+                    self.afc.error.AFC_error(message, pause=False)
         self.prep_active = False
         self.afc.save_vars()
 
@@ -629,6 +776,8 @@ class AFCLane:
         except:
             self.prep_debounce_button._old_note_filament_present(eventtime, prep_state)
 
+        if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
+            if prep_state == False and self.name == self.afc.current and self.afc.function.is_printing() and self.load_state and self.status != AFCLaneState.EJECTING:
                 # Don't run if user disabled sensor in gui
                 if not self.fila_prep.runout_helper.sensor_enabled:
                     self.logger.warning("Prep runout has been detected, but pause and runout detection has been disabled")
@@ -643,6 +792,7 @@ class AFCLane:
                 self.status = AFCLaneState.NONE
                 self.loaded_to_hub = False
                 self.td1_data = {}
+                self.afc.spool.clear_values(self)
                 self.unit_obj.lane_unloaded(self)
 
         self.afc.save_vars()
@@ -906,6 +1056,7 @@ class AFCLane:
 
         # Check upstream sensors: prep, load, hub
         prep_ok = self.prep_state
+        load_ok = self.load_state
         hub_ok = self.hub_obj.state if self.hub_obj is not None else True
 
         # If all upstream sensors are still True, this is a break/jam at the toolhead
@@ -932,6 +1083,7 @@ class AFCLane:
 
         # Check upstream sensors: prep, load
         prep_ok = self.prep_state
+        load_ok = self.load_state
         hub_ok = self.hub_obj.state if self.hub_obj is not None else False
 
         # If both upstream sensors are still True, but hub is not, this is a break/jam at the hub
@@ -1030,6 +1182,7 @@ class AFCLane:
 
         if not self.hub_obj.state:
             if not self.loaded_to_hub:
+                self.move_auto_speed(self.dist_hub)
 
             while not self.hub_obj.state:
                 if max_move_tries >= self.afc.max_move_tries:
@@ -1055,6 +1208,7 @@ class AFCLane:
                 self.afc.error.AFC_error(msg, pause=False)
                 status = False
 
+            self.move_auto_speed(self.hub_obj.td1_bowden_length * -1)
             if success:
                 self.send_lane_data()
 
@@ -1285,6 +1439,7 @@ class AFCLane:
         response['buffer_status'] = self.buffer_status()
         response['lane'] = self.index
         response['map'] = self.map
+        response['load'] = bool(self.load_state)
         response["prep"] =bool(self.prep_state)
         response["tool_loaded"] = self.tool_loaded
         response["loaded_to_hub"] = self.loaded_to_hub
@@ -1311,6 +1466,7 @@ class AFCLane:
             response['td1_td']          = self.td1_data['td'] if "td" in self.td1_data else ''
             response['td1_color']       = self.td1_data['color'] if "color" in self.td1_data else ''
             response['td1_scan_time']   = self.td1_data['scan_time'] if "scan_time" in self.td1_data else ''
+        return response
 
 
 
