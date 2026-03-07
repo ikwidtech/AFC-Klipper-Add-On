@@ -1,0 +1,88 @@
+[mcu TINYMMU]
+canbus_uuid: d43029b23430
+#serial: <enter_serial_device>
+
+[temperature_sensor TINYMMU]
+sensor_type: temperature_mcu
+sensor_mcu: TINYMMU
+
+[AFC_PICOMMU TINYMMU]
+hub: TINYMMU
+extruder: extruder
+buffer: TurtleNeck
+drive_stepper: TINYMMU_Drive
+#cam_angle: 60
+MAX_ANGLE_MOVEMENT: 180
+#mm_move_per_rotation: 40
+
+#(servo selector)
+selector_servo: TINY_SERVO
+selector_home_mode: none
+#selector_home_lane: lane1
+selector_home_angle: 90
+selector_dwell_ms: 250
+selector_detach_after: True
+selector_angle_offset: 0.0
+#selector_angle_offset: -2.0
+#selector_detach_after: True #if servo jitters
+#selector_detach_after: False # if neeed torque to stay aligned
+#selector_home_mode: angle | lane | none
+#selector_home_lane: lane1
+auto_home_on_ready: False
+
+[AFC_stepper TINYMMU_Drive]
+unit: TINYMMU
+step_pin: TINYMMU:gpio18
+dir_pin: !TINYMMU:gpio19
+enable_pin: !TINYMMU:gpio17
+microsteps: 16
+rotation_distance: 32.77872
+full_steps_per_rotation: 200
+
+[tmc2209 AFC_stepper TINYMMU_Drive]
+uart_pin: TINYMMU:gpio20
+uart_address: 0
+run_current: 0.8
+sense_resistor: 0.110
+
+[servo TINY_SERVO]
+pin: TINYMMU:gpio22
+maximum_servo_angle: 160
+minimum_pulse_width: 0.0005
+maximum_pulse_width: 0.0025
+initial_angle: 90
+
+
+[AFC_lane lane1]
+unit: TINYMMU:1
+dist_hub: 80.0 
+led_index: AFC_Indicator_TINYMMU:1
+selector_angle: 150
+prep: ^TINYMMU:gpio16
+load: ^TINYMMU:gpio14
+drive_dir: 1 #moves drive stepper for lane forward
+
+[AFC_lane lane2]
+unit: TINYMMU:2
+dist_hub: 100
+led_index: AFC_Indicator_TINYMMU:2
+selector_angle: 10
+prep: ^TINYMMU:gpio15
+load: ^!TINYMMU:gpio13
+drive_dir: -1 #reverve drive stepper for this lane only
+
+
+[AFC_hub TINYMMU]
+afc_bowden_length: 750.0       # Length of the Bowden tube from the hub to the toolhead sensor in mm.
+move_dis: 60                   # Distance to move the filament within the hub in mm.
+hub_clear_move_dis: 55
+switch_pin: ^!TINYMMU:gpio12
+
+[AFC_led AFC_Indicator_TINYMMU]
+pin: TINYMMU:gpio16
+chain_count: 2
+color_order: GRBW
+initial_RED: 0.0
+initial_GREEN: 0.0
+initial_BLUE: 0.0
+initial_WHITE: 0.0
