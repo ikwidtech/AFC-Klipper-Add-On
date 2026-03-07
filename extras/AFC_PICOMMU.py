@@ -1,13 +1,5 @@
 # Armored Turtle Automated Filament Control
 #
-# AFC_PICOMMU.py
-#
-# Servo-based selector unit for AFC (PicoMMU-style and other servo selector MMUs)
-#
-# Goal:
-#   Keep ALL standard AFC behavior intact (hub/buffer/extruder/drive motion),
-#   and only replace selector actuation (selector_stepper -> servo) plus servo "home".
-#
 # Config section:
 #   [AFC_PICOMMU <name>]
 #
@@ -31,10 +23,6 @@
 #   selector_angle: <deg>               # preferred for servo selectors
 #   selector_servo: <servo name>        # optional per-lane servo override
 #
-# NOTE:
-#   We DO NOT issue SET_SERVO during klippy:connect. Klipper may not be ready for gcode.
-#   We optionally home on klippy:ready (safe), and regardless we mark the unit "ready"
-#   so AFC doesn't show "Servo Selector Not Ready" just because auto-home is disabled.
 #
 import traceback
 from configfile import error
