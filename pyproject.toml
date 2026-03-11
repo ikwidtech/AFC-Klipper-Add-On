@@ -1,4 +1,12 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-q"
+
 [tool.ruff]
+force-exclude = true  # respect exclude list even when files are passed explicitly (e.g. changed-files in CI)
 exclude = [
     # Standard exclusions
     ".bzr", ".direnv", ".eggs", ".git", ".git-rewrite", ".hg", ".ipynb_checkpoints",
@@ -8,6 +16,9 @@ exclude = [
 
     # Optional: exclude Klipper source tree if just wrapping
     "klipper",
+
+    # Test files — linting rules don't apply to the test suite
+    "tests",
 ]
 
 # Same as Black.

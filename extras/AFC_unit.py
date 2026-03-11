@@ -13,9 +13,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
-    from extras.AFC_lane import (
-        afc, AFCLane, AssistActive, MoveDirection
-    )
+    from extras.AFC_lane import afc, AFCLane, AFCMoveWarning
     from extras.AFC_stepper import AFCExtruderStepper
     from extras.AFC_buffer import AFCTrigger
     from extras.AFC_hub import afc_hub
@@ -32,7 +30,7 @@ except:
 try: from extras.AFC_respond import AFCprompt
 except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
-try: from extras.AFC_lane import SpeedMode, AssistActive
+try: from extras.AFC_lane import SpeedMode, AssistActive, AFCHomingPoints, MoveDirection
 except:
     err_str = ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc())
     raise config_error(err_str)
@@ -99,9 +97,12 @@ class afcUnit:
         self.max_move_dis                = config.getfloat("max_move_dis", self.afc.max_move_dis)            # Maximum distance to move filament. AFC breaks filament moves over this number into multiple moves. Useful to lower this number if running into timer too close errors when doing long filament moves. Setting value here overrides values set in AFC.cfg file
         self.homing_overshoot            = config.getfloat("homing_overshoot", 50)                           # Amount to add to homing distance so that distance is long enough to actually hit endstop
         self.homing_delta                = config.getfloat("homing_delta", self.HOMING_DELTA)                # Delta for which to warn if homing move delta is not within this amount from command move distance.
+        self.load_then_home_var          = config.getboolean("load_then_home", self.afc.load_then_home_var)
+        self.load_undershoot             = config.getfloat("load_undershoot", self.afc.load_undershoot)
         self.debug                       = config.getboolean("debug",            False)                      # Turns on/off debug messages to console
         self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", self.afc.rev_long_moves_speed_factor)
         self.extruder_clear_dis          = config.getfloat("extruder_clear_dis", 50)                        # Amount to move to clear extruder gears when ejecting filament
+        self.enable_buffer_tool_check    = config.getboolean("enable_buffer_tool_check", False)
 
         # Espooler defines
         # Time in seconds to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in AFC.cfg file
@@ -617,6 +618,13 @@ class afcUnit:
     def calibrate_lane(self, cur_lane, tol):
         self._print_function_not_defined(self.calibrate_lane.__name__)
 
+    def unselect_lane(self, move_distance: float=50):
+        self._print_function_not_defined(self.unselect_lane.__name__)
+
+    def _move_lane(self, lane: AFCLane|AFCExtruderStepper, delay: float,
+                enable_movement: bool=True) -> bool:
+        self._print_function_not_defined(self._move_lane.__name__)
+
     def calibration_lane_message(self) -> str:
         return ""
 
@@ -723,7 +731,7 @@ class afcUnit:
     def move_to_hub(self, lane: AFCLane, dist: float,
                     dir:MoveDirection, use_homing=True,
                     speed_mode=SpeedMode.HUB,
-                    assist_active=AssistActive.DYNAMIC) -> tuple[bool, float|int, bool]:
+                    assist_active=AssistActive.DYNAMIC) -> tuple[bool, float|int, AFCMoveWarning]:
         """
         Helper method to move filament to hub sensor, calls lanes move_to method with HUB as trigger
         point when homing is enabled.
@@ -734,41 +742,122 @@ class afcUnit:
         :param dist: Distance in mm to move filament
         :param dir: Direction(+/-) to move filament
         :param use_homing: When enabled home_to logic is used, else move_advance logic is used
-        :param speedMode: SpeedMode type to use when moving stepper
+        :param speed_mode: SpeedMode type to use when moving stepper
         :param assist_active: Set appropriate to enabled/disable or use Dynamic logic to enabled/disable
                               spoolers based off move distance.
 
-        :return tuple: Returns if move was successful, distance moved, and boolean set to true if
-                movement moved is not within 300mm of total distance. When homing is
-                disabled, always returns True, 0, False.
+        :return tuple[bool, float|int, AFCMoveWarning]: A tuple containing:
+
+            - Returns True if move was successful
+            - Total distance moved
+            - AFCMoveWarning.WARN set if movement moved is not within 300mm of total distance,
+                  AFCMoveWarning.ERROR when error is detected during homing, AFCMoveWarning.NONE
+                  when no error or not full movement detected. When homing is disabled, always returns
+                  True, 0, AFCMoveWarning.NONE.
         """
         return lane.move_to(dist * dir, speed_mode, assist_active=assist_active,
                             endstop=lane.hub_endstop_name, use_homing=use_homing)
 
     def move_to_load(self, lane: AFCLane, dist: float,
                      dir: MoveDirection, use_homing=True,
-                     speed_mode=SpeedMode.LONG) -> tuple[bool, float|int, bool]:
+                     speed_mode:SpeedMode=SpeedMode.LONG) -> tuple[bool, float|int, AFCMoveWarning]:
         """
         Helper method to move filament to load sensor, calls lane's move_to method with the load
         sensor endpoint (lane.load_es) as trigger point when homing is enabled.
 
         This can be overridden if needed for unit specific functionality
 
-        Active assist and set to Dynamic and SpeedMode is set to Long when calling lanes move_to
-        method.
+        Active assist is set to Dynamic and SpeedMode is set to Long by default when calling lanes
+        move_to method.
 
         :param lane: AFCLane object to move
         :param dist: Distance in mm to move filament
         :param dir: Direction(+/-) to move filament
         :param use_homing: When enabled home_to logic is used, else move_advance logic is used
-        :param speedMode: SpeedMode type to use when moving stepper
+        :param speed_mode: SpeedMode type to use when moving stepper
+
+        :return tuple[bool, float|int, AFCMoveWarning]: A tuple containing:
+
+            - Returns True if move was successful
+            - Total distance moved
+            - AFCMoveWarning.WARN set if movement moved is not within 300mm of total distance,
+                  AFCMoveWarning.ERROR when error is detected during homing, AFCMoveWarning.NONE
+                  when no error or not full movement detected. When homing is disabled, always returns
+                  True, 0, AFCMoveWarning.NONE.
+        """
+        return lane.move_to(dist * dir, speed_mode, endstop=lane.load_es,
+                            assist_active=AssistActive.DYNAMIC, use_homing=use_homing)
+
+    def load_then_home(self, lane: AFCLane|AFCExtruderStepper, distance: float,
+                       assist_active: AssistActive, endstop: AFCHomingPoints) -> tuple[bool, float|int, AFCMoveWarning]:
+        """
+        Helper method to move filament to toolhead. If load_then_home boolean is set, AFC will do
+        a normal move without homing enabled for a distance of: distance - load_undershoot.
+        Once this move is done, AFC will them home the rest of the way to toolhead sensor or buffer for ramming.
+
+        If load_then_home is set false, then AFC will do a homing move from hub to toolhead.
+
+        :param lane: AFCLane object to move
+        :param distance: Total distance in mm to move filament
+        :param assist_active: Set appropriate to enabled/disable or use Dynamic logic to enabled/disable
+                              spoolers based off move distance.
+        :param endstop: Endstop to use when loading to toolhead
 
         :return tuple: Returns if move was successful, distance moved, and boolean set to true if
                        movement moved is not within 300mm of total distance. When homing is
                        disabled, always returns True, 0, False.
         """
-        return lane.move_to(dist * dir, speed_mode, endstop=lane.load_es,
-                            assist_active=AssistActive.DYNAMIC, use_homing=use_homing)
+        total_distance = distance
+        speed_mode = SpeedMode.LONG
+        # Only do load then home if user has buffer defined and load then home enabled
+        home_to_tool = self.afc.homing_enabled and self.afc.home_to_tool
+        # Adding in check to make sure distance is greater than load_undershoot value for lane
+        # when load_then_home is enabled
+        load_and_home = lane.load_then_home_var and distance > lane.load_undershoot
+        if (load_and_home
+            and lane.extruder_obj.tool_start == "buffer"):
+            load_length = distance - lane.load_undershoot
+            home, dist, warn = lane.move_to(load_length, speed_mode, assist_active=assist_active,
+                                            endstop=endstop, use_homing=False)
+            total_distance -= load_length
+            speed_mode = SpeedMode.SHORT
+        home, dist, warn = lane.move_to(total_distance, speed_mode, assist_active=assist_active,
+                                        endstop=endstop, use_homing=home_to_tool)
+
+        return home, dist, warn
+
+    def _buffer_toolhead_load_check(self, lane: AFCLane|AFCExtruderStepper):
+        """
+        Method for checking if filament is loaded to toolhead when using buffer in ramming mode.
+        If homing is not enabled or enable_buffer_tool_check is not enabled, lanes tool_loaded status
+        is returned.
+
+        When homing is enabled and enable_buffer_tool_check is enabled, this method will try to
+        move the filament so that both advance and trail sensor in buffer are hit. If this is
+        successful, then it's deemed that filament is actually loaded to the toolhead.
+
+        :param lane: Lane to check if filament is loaded to toolhead.
+        :return: Returns true if check is successful.
+        """
+        loaded = False
+        homed = False
+        if (not self.afc.homing_enabled
+            or not self.enable_buffer_tool_check):
+            loaded = lane.tool_loaded
+        else:
+            homed, move_dis, _ = lane.move_to(200, SpeedMode.SHORT, AFCHomingPoints.BUFFER)
+
+            if not homed:
+                msg = f"Buffer toolhead loaded check failed for {lane.name}. Please verify"
+                msg +=f" that {lane.name} is loaded to toolhead. If lane is not loaded to "
+                msg +=f"toolhead then run AFC_RESET and choose {lane.name} to reset back to hub."
+                msg +=" Once lane is reset run UNSET_LANE_LOADED macro."
+                self.afc.error.AFC_error(msg, False)
+            else:
+                lane.move(move_dis * MoveDirection.NEG, lane.short_moves_speed,
+                          lane.short_moves_accel, False)
+            loaded = homed
+        return loaded
 
     cmd_AFC_SELECT_LANE_help = "Command to home to lane selector for specified lane in selector style units."
     cmd_AFC_SELECT_LANE_options = {"LANE": {"type":"string", "default":"lane1"}}
@@ -797,3 +886,41 @@ class afcUnit:
         else:
             error_string = f"Invalid lane {lane}"
             gcmd.error(error_string)
+
+    cmd_AFC_UNSELECT_LANE_help = "Command to move selector to free filament from currently selected lane." \
+                               " Selector only moves if any lanes selector is currently triggered unless" \
+                               " force is passed in."
+    cmd_AFC_UNSELECT_LANE_options = {"UNIT": {"type":"string", "default":""},
+                                     "FORCE" : {"type":"int", "default":0},
+                                     "MOVE_DIST" : {"type":"int", "default":100}}
+    def cmd_AFC_UNSELECT_LANE(self, gcmd: GCodeCommand):
+        """
+        Command to move selector to free filament from currently selected lane. Selector only moves
+        if any lanes selector is currently triggered unless force is passed in.
+
+        Optional Parameter:
+        FORCE: pass in 1 to always move selector
+        MOVE_DIST: amount to move selector, defaults to 100mm
+
+        Usage
+        -----
+        `AFC_UNSELECT_LANE UNIT=<unit_name> FORCE=<0|1> MOVE_DIST=<amount to move selector>`
+
+        Example
+        -----
+        ```
+        AFC_UNSELECT_LANE UNIT=ViViD_1`
+        ```
+        Example
+        -----
+        ```
+        AFC_UNSELECT_LANE UNIT=ViViD_1 FORCE=1`
+        ```
+        """
+        force: int = gcmd.get_int("FORCE", 0)
+        move_dist: float = gcmd.get_float("MOVE_DIST", 100.0)
+        force = force != 0
+        any_selected = any(True if lane._selector_state else False for lane in self.lanes.values())
+        if any_selected or force == 1:
+            self.unselect_lane(move_distance=move_dist)
+            self.logger.info(f"{self.name} selector moved")

@@ -334,7 +334,7 @@ class AFCExtruderStepper(AFCLane):
             curtime: float = self.reactor.monotonic()
             est_print_time: float = toolhead.mcu.estimated_print_time(curtime)
             wait_time: float = toolhead.print_time - est_print_time - flush_delay
-            if wait_time > 0.:
+            if wait_time > 0. and toolhead.can_pause:
                 drip_completion.wait(curtime + wait_time)
                 continue
             npt = min(toolhead.print_time + DRIP_SEGMENT_TIME, max_time)
@@ -452,7 +452,7 @@ class AFCExtruderStepper(AFCLane):
         hub_pin = self.hub_endstop
         if hub_pin is None:
             hub_name = getattr(self, 'hub', None)
-            if not hub_name or hub_name == 'direct':
+            if not hub_name or 'direct' in hub_name:
                 hub_name = self._inherit_from_unit('hub')
             hub_pin = self._get_section_value('AFC_hub', hub_name, 'switch_pin')
 
@@ -626,7 +626,18 @@ class AFCExtruderStepper(AFCLane):
         try:
             start_mcu_pos = self.extruder_stepper.stepper.get_mcu_position()
             with self.assist_move(speed, rewind, assist_active=assist_active):
-                phoming.manual_home(self, [endstop], pos, speed, triggered, check_trigger)
+                if self.afc.manual_home_has_probe_pos_param:
+                    # Explicitly set probe_pos=False to use normal homing coordinates even when
+                    # homing is initiated from a "probing" context. AFC lanes are not bed/Z
+                    # probes, and we do not want Klipper's probe-position bookkeeping here.
+                    # This argument is passed explicitly to remain compatible with newer
+                    # Klipper versions that added the probe_pos parameter.
+                    phoming.manual_home(toolhead=self, endstops=[endstop], pos=pos, speed=speed,
+                                        probe_pos=False, triggered=triggered,
+                                        check_triggered=check_trigger)
+                else:
+                    phoming.manual_home(toolhead=self, endstops=[endstop], pos=pos, speed=speed,
+                                        triggered=triggered, check_triggered=check_trigger)
             end_ts = reactor.monotonic()
             try:
                 # Log distance at trigger using homing trigger positions
@@ -669,7 +680,7 @@ class AFCExtruderStepper(AFCLane):
             raise self.gcode.error(str(e))
 
     # ------------------ Convenience homing helpers ------------------
-    def home_to(self, endstop_spec:AFCHomingPoints, distance:Optional[float], speed, accel,
+    def home_to(self, endstop_spec:AFCHomingPoints, distance:Optional[float], speed: float, accel: float,
                 triggered=True, check_trigger=True, assist_active=True) -> tuple[bool, float]:
         """
         Home towards an endstop relative to current position by distance (mm).
@@ -680,15 +691,19 @@ class AFCExtruderStepper(AFCLane):
                              or a logical name such as 'load', 'toolhead', etc.
         :param distance: Relative distance to move toward the endstop in millimeters.
                          Required unless using a helper method.
+        :param speed: The speed of the movement.
+        :param accel: The acceleration of the movement.
         :param speed_mode: Enum or configuration selecting the speed and acceleration
                            profile to use for this move. Defaults to `SpeedMode`.
         :param triggered: If True, movement stops when the endstop triggers. Defaults to True.
         :param check_trigger: If True, verify that the endstop is actually triggered at the
                               end of the move. Defaults to True.
-        :return tuple: bool indicated if homing was successful or not, float indicated movement
-                       weather homing was successful or not. When not successful distance
-                       will equal max move distance.
+        :return tuple: bool: indicated if homing was successful or not.
+                       float: indicated movement wheather homing was successful or not. When not
+                         successful distance will equal max move distance.
+                       bool: indicate if an error happened while homing
         """
+        error = False
 
         if distance is None:
             raise self.gcode.error("home_to requires an explicit distance; use home_to_hub/toolhead/buffer for sensible defaults")
@@ -703,11 +718,12 @@ class AFCExtruderStepper(AFCLane):
                                                        check_trigger=check_trigger,
                                                        assist_active=assist_active)
         except Exception:
+            error = True
             msg = f"Error occurred when trying to home to {endstop_spec}, PAUSING!"
             self.afc.error.AFC_error(msg, self.afc.function.in_print())
             self.logger.debug(f"{traceback.format_exc()}")
         self.sync_print_time()
-        return homed, move_distance
+        return homed, move_distance, error
 
     cmd_AFC_STEPPER_HOME_help = "Command a manually home stepper to specified endstop"
     cmd_AFC_STEPPER_HOME_options = {"STEPPER": {"type":"string", "default":"lane1"},
@@ -749,7 +765,7 @@ class AFCExtruderStepper(AFCLane):
         Example
         ----
         ```
-        AFC_STEPPER_HOME STEPPER=lane1 MOVE=10 SPEED=5
+        AFC_STEPPER_HOME STEPPER=lane1 DIST=10 SPEED=5
         ```
         Example
         ----

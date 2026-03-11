@@ -39,6 +39,8 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
+coverage-report/
+test-results.xml
 .tox/
 .nox/
 .coverage
@@ -129,8 +131,16 @@ dmypy.json
 .pyre/
 
 klipper/
+kalico/
 
 uv.lock
 
+# Klippy integration test artifacts (generated in CI, not committed)
+tests/dict/*.dict
+tests/logs/
+klippy-test-results*.xml
+
 .idea/
 site/
+
+.claude/

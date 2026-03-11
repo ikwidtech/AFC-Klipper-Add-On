@@ -5,9 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2026-02-24]
+## [2026-03-07]
+### Fix
+- Added error checking when homing during a Tool Load or Unload, if a homing error (like communication timeout or something similar) happens during these calls that AFC displays error and returns early.
+- Updating cut/kick/poop macros to help with TTCs when calling these macros
+
+## [2026-03-06]
 ### Added
-- Added per-toolhead variable overrides for macros via `_AFC_<base>_VARS_<extruder>` companion macros.
+- Ability to check if toolhead is loaded when using buffer as toolhead sensor, add `enable_buffer_tool_check: True` to AFC_Boxturtle/AFC_vivid etc config section to enable.
+
+## [2026-03-03]
+### Update
+- Updated PREP logic for ViViD to check if filament is loaded by moving filament to load sensor. ViViD no longer relies on saved `loaded_to_hub` state.
+
+## [2026-03-01]
+### Added
+- Added `selector_cal_distance` to AFC_lane for units like ViViD that have selectors. If this value is set AFC will move the selector the supplied distance in mm. This is to help make sure selectors have a good grip on the filament.
+### Update
+- Added macro AFC_RESET language to message when failing to load filament to toolhead.
+- Added raw_load_state, this always returns the current state of the load sensor. Updated some load_states to raw_load_state.
+- Rearranged timeout in prep_callback to help stop message popping up that lane cannot load because printer is moving or homing.
+- Added logic to ViViD units to try multiple times to load filament to load sensor.
+### Fixed
+- Fixed issue where lane would not stop retracting back when running PREP and AFC tries to fix lane. Updated moves to be homing if homing is enabled.
+- Fixed issue where internal state was not being set correctly when fixing a lane during PREP.
+
+## [2026-02-27]
+### Added
+- New `lower_extruder_temp_on_change` config option in `AFC.cfg`. When set to `False`, AFC will not lower the extruder temperature during a filament change as long as the current temperature is already sufficient for the target material (within 5°C). Defaults to `True` to preserve existing behaviour.
+- Added load‑then‑home support with new load_then_home and load_undershoot config options at AFC, unit, and lane levels.
+- Added new DIST_HUB speed mode and updated speed/accel selection logic; BoxTurtle now uses DIST_HUB for hub‑distance moves.
+- Adjusted HUB speed‑mode mapping to short‑move parameters and cleaned up related move‑to‑tool logic.
+- Added AFC_UNSELECT_LANE macro to move selector to ungrip filament for units that have selectors
+- Added AFC_RECOVER_LANE to reset internal lane variables when filament was removed during power off, this should be used as a last resort and it should not be made a habit to remove filament from units when power is not applied and AFC not running.
+
+## [2026-02-25]
+### Fixed
+- Error where level was removed from AFC_error method, but calling functions were not updated and were still trying to pass in level parameter
+
+## [2026-02-24]
+### Fixed
+- Issue where trying to load another lane while loading a lane could cause klipper to crash
+### Added
+- Toolchanger: Added per-toolhead variable overrides for macros via `_AFC_<base>_VARS_<extruder>` companion macros.
+## [2026-02-23]
+### Fixed
+- The update-afc.sh script will now check to ensure the printer is returning any status other than `Printing` when checking
+  if it can restart Klipper. This includes the `idle` state, which was not checked before.
+
+## [2026-02-22]
+### Fixed
+- Stutters in toolhead movement when print assist kicks in are fixed.
+- Fixed compatibility issue with Klipper homing changes introduced in git hash 57c2e0c by detecting and using the new probe_pos parameter when available.
+
+
 
 ## [2026-02-21]
 ### Added
@@ -41,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2026-02-09]
 ### Added
-- The `update-afc.sh` and `install-afc.sh` script will now show a warning if it is unable to restart Klipper when either upgrading or installing the 
+- The `update-afc.sh` and `install-afc.sh` script will now show a warning if it is unable to restart Klipper when either upgrading or installing the software. 
 
 ## [2026-02-06]
 ### Added
@@ -76,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resetting filament position for clog detection when starting a new print
 - Added debugging messages when doing unloading filament from toolhead for tool_stn_unload movements
 - Check to verify user's macros positions are set correctly and not left as default values. Changed default values to -99,-99 etc, just in case someone does truly have their positions at -1,-1.
+- Added ability to remember last ejected spool via new `SET_REMEMBER_SPOOL` macro.
 ### Changed
 - Toolchanger: Updated buffer logic to internally store active lane buffer is enabled for, this better allows multiple buffer to be active for different lanes in IDEX type setups.
 - Toolchanger: Updated `on_shuttle` logic for setups like IDEX setups where KTC is not used but AFC_toolchanger is still included
@@ -85,10 +137,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added ability to track cuts per toolhead for toolchangers.
 - Changed how average times are calculated. Use `AFC_RESET_STATS EXTRUDER=all` to use new `total_time/count` calculation.
 - Merged normal and skinny AFC_STATS printout into one function and changed printout format to work better with toolchangers.
+- The install-afc.sh script will now allow users to install as root if it detects the user is running a SAF K1 environment.
+- The install-afc.sh script will now properly allow users to install the software from a .zip archive if a Git based installation is not available.
 ### Fix
 - Toolchanger: Implemented some fixes to prevent klipper crashing when calibrating HTLF units
 - Toolchanger: Fixed `spoolman_set_active_spool` error during PREP
 - Toolchanger: Fixed default poop macro for toolchangers with per-tool fans defined
+- Resolved bug where when running `AFC_TEST_LANES` on a single lane, the z axis would not reset correctly, resulting in a constantly increasing z height.
 
 ## [December 2025]
 ### Added

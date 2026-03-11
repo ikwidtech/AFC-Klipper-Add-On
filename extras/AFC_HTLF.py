@@ -17,7 +17,7 @@ except:
     err_str = f"Error when trying to import AFC_utils.ERROR_STR\n{trace}"
     raise config_error(err_str)
 
-try: from extras.AFC_lane import AFCLaneState, MoveDirection
+try: from extras.AFC_lane import AFCLaneState, MoveDirection, AFCLane
 except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 try: from extras.AFC_BoxTurtle import afcBoxTurtle
@@ -178,7 +178,10 @@ class AFC_HTLF(afcBoxTurtle):
             if not self.afc.homing_enabled:
                 move_distance = 1
             self._move_selector_home(move_distance)
-            total_moved += move_distance
+            if self.afc.homing_enabled:
+                total_moved += self._homed_distance
+            else:
+                total_moved += move_distance
             if total_moved > (self.mm_move_per_rotation/360)*(self.MAX_ANGLE_MOVEMENT+self.cam_angle):
                 self.failed_to_home = True
                 self.afc.error.AFC_error("Failed to home {}".format(self.name), False)
@@ -244,6 +247,14 @@ class AFC_HTLF(afcBoxTurtle):
                 and self.afc.function.is_printing()
                 and cur_lane.status != AFCLaneState.EJECTING
                 and cur_lane.status != AFCLaneState.CALIBRATING)
+
+    def prep_load(self, lane: AFCLane):
+        # HTLF does not have prep switches returning
+        return
+
+    def prep_post_load(self, lane: AFCLane):
+        # HTLF does not have prep switches returning
+        return
 
 def load_config_prefix(config):
     return AFC_HTLF(config)

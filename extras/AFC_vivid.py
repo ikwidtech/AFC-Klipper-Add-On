@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from configfile import ConfigWrapper
-    from extras.AFC_lane import AFCLane
+    from extras.AFC_lane import AFCLane, AFCMoveWarning
 
 try: from extras.AFC_utils import ERROR_STR
 except:
@@ -78,10 +78,51 @@ class AFC_vivid(afcBoxTurtle):
 
         self._lookup_objects(config)
 
+        self.function.register_mux_command(self.afc.show_macros, 'AFC_UNSELECT_LANE', 'UNIT', self.name,
+                                           self.cmd_AFC_UNSELECT_LANE, self.cmd_AFC_UNSELECT_LANE_help,
+                                           self.cmd_AFC_UNSELECT_LANE_options )
+
     def handle_connect(self):
         super().handle_connect()
         self.logo = '<span class=success--text>ViViD Ready\n</span>'
         self.logo_error = '<span class=error--text>ViViD Not Ready</span>\n'
+
+    def _move_lane(self, lane: AFCLane, delay: float=1,
+                enable_movement: bool=True) -> bool:
+        """
+        Method to check and see if filament is loaded into lane. This method tries to move filament
+        to load sensor, once successful lane is retracted by hubs `hub_clear_move_dis`. If homing
+        is not successful, internal lane states are reset.
+
+        :param lane: Lane to move and check if filament is present
+        :param delay: Not used
+        :param enable_movement: Not used
+        :return: Returns True if homing was successful, False when homing is not successful
+        """
+        loaded = False
+        homed = False
+        if lane.prep_state:
+            homed, _, _ = self.move_to_load(lane, lane.dist_hub, MoveDirection.POS,
+                                            True, SpeedMode.SHORT)
+            if homed:
+                loaded = True
+                lane.loaded_to_hub = True
+                if not lane.tool_loaded:
+                    lane.move_to(lane.hub_obj.hub_clear_move_dis * MoveDirection.NEG,
+                                 SpeedMode.SHORT, use_homing=False)
+        # Resetting internal states when prep sensor is not triggered but loaded to hub is still
+        # set, or when failed to home to load sensor
+        if ((not lane.prep_state
+             and lane.loaded_to_hub)
+             or not homed):
+            self.lane_unloaded(lane)
+            lane.tool_loaded = False
+            lane.status = AFCLaneState.NONE
+            lane.loaded_to_hub = False
+            lane.td1_data = {}
+            if not lane.remember_spool:
+                lane.afc.spool.clear_values(lane)
+        return loaded
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         return super().system_Test( cur_lane, delay, assignTcmd, enable_movement=False)
@@ -148,6 +189,12 @@ class AFC_vivid(afcBoxTurtle):
                     endstop_spec=lane.selector_endstop_name,
                     assist_active=False
                 )
+
+                if (lane.selector_cal_dis is not None
+                    and lane.selector_cal_dis != 0.0):
+                    self.selector_stepper_obj.move(lane.selector_cal_dis, lane.short_moves_speed,
+                                                   lane.short_moves_accel, False)
+
                 self.logger.debug(f"ViViD: Homing done, success:{homed}, distance:{distance}")
                 return homed, round(distance, 2)
 
@@ -171,15 +218,20 @@ class AFC_vivid(afcBoxTurtle):
         """
         self.lane_loading(lane)
         self.select_lane(lane, sel_prep=True)
+        num_tries = 0
         if not lane.calibrated_lane:
             distance = self.CALIBRATION_DISTANCE
             move_speed = SpeedMode.SHORT
         else:
             distance = lane.dist_hub
             move_speed = SpeedMode.LONG
-
-        homed, distance, warn = lane.move_to(distance, move_speed, assist_active=AssistActive.NO,
-                                             endstop=lane.load_endstop_name, use_homing=True)
+        homed = False
+        while (num_tries < 2
+               and lane.prep_state
+               and not lane.raw_load_state):
+            homed, distance, _ = lane.move_to(distance, move_speed, assist_active=AssistActive.NO,
+                                              endstop=lane.load_endstop_name, use_homing=True)
+            num_tries += 1
         if homed:
             lane.loaded_to_hub = True
             if not lane.calibrated_lane:
@@ -189,9 +241,12 @@ class AFC_vivid(afcBoxTurtle):
                                                 f"{lane.name} calibrated, updating dist_hub")
                 self.afc.function.ConfigRewrite(lane.fullname, "calibrated_lane",
                                                 lane.calibrated_lane, "")
-            # Retract a bit so load sensor is not triggered
-            lane.move_to( -10, SpeedMode.SHORT, use_homing=False)
+            # Retract so load sensor is not triggered
+            lane.move_to(lane.hub_obj.hub_clear_move_dis * MoveDirection.NEG,
+                         SpeedMode.SHORT, use_homing=False)
             self.lane_loaded(lane)
+        else:
+            self.logger.error(f"Failed to move {lane.name} to load sensor.")
 
         self.selector_stepper_obj.do_enable(False)
         self.drive_stepper_obj.do_enable(False)
@@ -204,12 +259,14 @@ class AFC_vivid(afcBoxTurtle):
         # Do nothing and return
         return
 
-    def unselect_lane(self):
+    def unselect_lane(self, move_distance: float=50):
         """
-        Method for moving the selector 50mm to free filament in a lane, this is useful when
+        Move the selector by a configurable distance to free filament in a lane, e.g. when
         ejecting filament.
+
+        :param move_distance: Distance in millimeters to move the selector. Defaults to 50 mm.
         """
-        self.selector_stepper_obj.move(50, 100, 100, False)
+        self.selector_stepper_obj.move(move_distance, 100, 100, False)
 
     def eject_lane(self, lane: AFCLane):
         """
@@ -224,8 +281,9 @@ class AFC_vivid(afcBoxTurtle):
         self.select_lane(lane)
         move_dis = lane.dist_hub
         if move_dis > 400:
-            move_dis = lane.dist_hub - (self.LANE_OVERSHOOT+100)
-        lane.move_to( move_dis * MoveDirection.NEG, SpeedMode.LONG,
+            move_dis = lane.dist_hub - (self.LANE_OVERSHOOT+100) - \
+                       lane.hub_obj.hub_clear_move_dis - lane.homing_overshoot
+        lane.move_to(move_dis * MoveDirection.NEG, SpeedMode.LONG,
                      endstop=lane.prep_endstop_name,
                      assist_active=AssistActive.NO, use_homing=True)
         self.unselect_lane()
@@ -234,7 +292,7 @@ class AFC_vivid(afcBoxTurtle):
 
     def move_to_hub(self, lane: AFCLane, dist: float, dir:MoveDirection, use_homing=True,
                     speed_mode=SpeedMode.HUB, assist_active=AssistActive.DYNAMIC
-                    ) -> tuple[bool, float|int, bool]:
+                    ) -> tuple[bool, float|int, AFCMoveWarning]:
         """
         Helper method for calling lanes move_to method and passing in lanes load endstop as trigger
         point when homing is enabled.
@@ -243,15 +301,20 @@ class AFC_vivid(afcBoxTurtle):
         :param dist: Distance in mm to move filament
         :param dir: Direction(+/-) to move filament
         :param use_homing: When enabled home_to logic is used, else move_advance logic is used
-        :param speedMode: SpeedMode type to use when moving stepper
+        :param speed_mode: SpeedMode type to use when moving stepper
         :param assist_active: ViViD does not have spoolers, setting this parameter does nothing.
 
-        :return tuple: Returns if move was successful, distance moved, and boolean set to true if
-                movement moved is not within 300mm of total distance. When homing is
-                disabled, always returns True, 0, False.
+        :return tuple[bool, float|int, AFCMoveWarning]: A tuple containing:
+
+            - Returns True if move was successful
+            - Total distance moved
+            - AFCMoveWarning.WARN set if movement moved is not within 300mm of total distance,
+                  AFCMoveWarning.ERROR when error is detected during homing, AFCMoveWarning.NONE
+                  when no error or not full movement detected. When homing is disabled, always returns
+                  True, 0, AFCMoveWarning.NONE.
         """
         homed, distance, warn = lane.move_to(dist * dir, speed_mode, assist_active=assist_active,
-                                       endstop=lane.load_es, use_homing=use_homing)
+                                             endstop=lane.load_es, use_homing=use_homing)
         return homed, distance, warn
 
     def calibrate_lane(

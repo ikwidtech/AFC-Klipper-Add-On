@@ -54,6 +54,7 @@ class SpeedMode(Enum):
     HUB = 3
     NIGHT = 4
     CALIBRATION = 5
+    DIST_HUB = 6
 
 class MoveDirection(float):
     POS = 1.
@@ -84,6 +85,11 @@ class AFCHomingPoints(str):
     BUFFER_TRAIL= "buffer_trailing"
     SELECTOR    = "selector"
     PREP        = "prep"
+
+class AFCMoveWarning(Enum):
+    NONE = 0
+    WARN = 1
+    ERROR = 2
 
 class AFCLane:
     UPDATE_WEIGHT_DELAY = 10.0
@@ -170,6 +176,8 @@ class AFCLane:
         self.n20_break_delay_time: float = config.getfloat("n20_break_delay_time", None)        # Time to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.homing_overshoot: float   = config.getfloat("homing_overshoot", None)             # Amount to add to homing distance so that distance is long enough to actually hit endstop
         self.homing_delta: float       = config.getfloat("homing_delta", None)                 # Delta for which to warn if homing move delta is not within this amount from command move distance.
+        self.load_then_home_var: bool  = config.getboolean("load_then_home", None)
+        self.load_undershoot: float    = config.getfloat("load_undershoot", None)
         self.extruder_clear_dis: float = config.getfloat("extruder_clear_dis", None)
 
         # Custom Load/unload Commands
@@ -258,7 +266,10 @@ class AFCLane:
             self._set_homing_endstop(query_endstops, ppins,
                                      self.load, AFCHomingPoints.LOAD)
 
+        self._selector_state: Optional[bool] = None
+        self.selector_cal_dis: Optional[float] = None
         if self.selector is not None:
+            self.selector_cal_dis = config.getfloat("selector_cal_distance", 0.0)
             show_sensor = True
             if not self.enable_sensors_in_gui or (self.sensor_to_show is not None and 'selector' not in self.sensor_to_show):
                 show_sensor = False
@@ -266,6 +277,8 @@ class AFCLane:
                                                      self.printer, show_sensor)
             self._set_homing_endstop(query_endstops, ppins,
                                      self.selector, AFCHomingPoints.SELECTOR)
+            buttons.register_buttons([self.selector], self.selector_callback)
+
         if (self.hub
             and "direct" not in self.hub):
             self._get_hub_object()
@@ -293,6 +306,9 @@ class AFCLane:
         self.function.register_mux_command(self.show_macros, 'SET_LANE_LOADED', 'LANE', self.name,
                                            self.cmd_SET_LANE_LOADED, self.cmd_SET_LANE_LOADED_help,
                                            self.cmd_SET_LANE_LOAD_options )
+        self.function.register_mux_command(self.show_macros, 'AFC_RECOVER_LANE', 'LANE', self.name,
+                                           self.cmd_AFC_RECOVER_LANE, self.cmd_AFC_RECOVER_LANE_help,
+                                           self.cmd_AFC_RECOVER_LANE_options )
 
         if "AFC_stepper" in self.fullname:
             self.printer.register_event_handler("klippy:mcu_identify", self._handle_mcu_identify)
@@ -334,7 +350,7 @@ class AFCLane:
 
     def _lookup_endstop(self, name: str) -> Optional[str]:
         """
-        Helper methof for looking up endstops from dictionary
+        Helper method for looking up endstops from dictionary
 
         :param name: Endstop name to lookup
         :return: Returns name if its found, if name is not found returns name passed in
@@ -601,6 +617,8 @@ class AFCLane:
         if self.max_move_dis                is None: self.max_move_dis      = self.unit_obj.max_move_dis
         if self.homing_overshoot            is None: self.homing_overshoot  = self.unit_obj.homing_overshoot
         if self.homing_delta                is None: self.homing_delta      = self.unit_obj.homing_delta
+        if self.load_then_home_var          is None: self.load_then_home_var= self.unit_obj.load_then_home_var
+        if self.load_undershoot             is None: self.load_undershoot   = self.unit_obj.load_undershoot
         if self.td1_when_loaded             is None: self.td1_when_loaded   = self.unit_obj.td1_when_loaded
         if self.td1_device_id               is None: self.td1_device_id     = self.unit_obj.td1_device_id
         if self.extruder_clear_dis          is None: self.extruder_clear_dis= self.unit_obj.extruder_clear_dis
@@ -745,9 +763,10 @@ class AFCLane:
             elif mode == SpeedMode.LONG:
                 return self.long_moves_speed, self.long_moves_accel
             elif (mode == SpeedMode.SHORT
-                  or mode == SpeedMode.CALIBRATION):
+                  or mode == SpeedMode.CALIBRATION
+                  or mode == SpeedMode.HUB):
                 return self.short_moves_speed, self.short_moves_accel
-            elif mode == SpeedMode.HUB:
+            elif (mode == SpeedMode.DIST_HUB):
                 return self.dist_hub_move_speed, self.dist_hub_move_accel
             else:
                 return self.short_moves_speed, self.short_moves_accel
@@ -798,7 +817,7 @@ class AFCLane:
 
     def move_to(self, distance: float, speed_mode: SpeedMode,
                 endstop:AFCHomingPoints=AFCHomingPoints.NONE,
-                assist_active=AssistActive.NO, use_homing=True) -> tuple[bool, float|int, bool]:
+                assist_active=AssistActive.NO, use_homing=True) -> tuple[bool, float|int, AFCMoveWarning]:
         """
         Helper method for calling stepper move_advance or home_to functions based
         off use_homing parameter
@@ -808,13 +827,19 @@ class AFCLane:
         :param endstop: When homing is enabled, used to specify which endstop to home to
         :param assist_active: AssistActive type to enable/disable espoolers when moving stepper
         :param use_homing: When enabled home_to logic is used, else move_advance logic is used
-        :return tuple: Returns if move was successful, distance moved, and boolean set to true if
-                movement moved is not within 300mm of total distance. When homing is
-                disabled, always returns True, 0, False.
+        :return tuple[bool, float|int, AFCMoveWarning]: A tuple containing:
+
+            - Returns True if move was successful
+            - Total distance moved
+            - AFCMoveWarning.WARN set if movement moved is not within 300mm of total distance,
+                  AFCMoveWarning.ERROR when error is detected during homing, AFCMoveWarning.NONE
+                  when no error or not full movement detected. When homing is disabled, always returns
+                  True, 0, AFCMoveWarning.NONE.
         """
-        warn = False
+        warn = AFCMoveWarning.NONE
+        extruder_stepper = getattr(self, "extruder_stepper", None)
         if (self.drive_stepper
-            or hasattr(self, "extruder_stepper")):
+            or extruder_stepper):
             if use_homing:
                 if self.drive_stepper:
                     home_to = self.drive_stepper.home_to
@@ -826,15 +851,20 @@ class AFCLane:
                     new_distance = distance - self.homing_overshoot
                 self.unit_obj.select_lane(self)
                 speed, accel = self.get_speed_accel(speed_mode)
-                homed, mov_dis = home_to(endstop, new_distance, speed, accel,
-                        distance > 0, assist_active=self.get_active_assist(distance, assist_active))
-                if (abs(distance) - mov_dis) > self.homing_delta:
-                    warn = True
+                homed, mov_dis, error = home_to(endstop, new_distance, speed, accel,
+                        distance > 0, assist_active=self.get_active_assist(distance, assist_active)
+                )
+                if error:
+                    warn = AFCMoveWarning.ERROR
+                elif (abs(distance) - mov_dis) > self.homing_delta:
+                    warn = AFCMoveWarning.WARN
 
                 return homed, mov_dis, warn
             else:
                 self.move_advanced(distance, speed_mode, assist_active )
                 return True, 0, warn
+        else:
+            return False, 0, AFCMoveWarning.ERROR
 
 
     def move_advanced(self, distance, speed_mode: SpeedMode, assist_active: AssistActive = AssistActive.NO):
@@ -945,6 +975,12 @@ class AFCLane:
         else:
             return bool(self._load_state)
 
+    @property
+    def raw_load_state(self) -> bool:
+        return bool(self._load_state)
+
+    def selector_callback(self, eventtime: float, state):
+        self._selector_state = state
 
     def load_callback(self, eventtime, state):
         self._load_state = state
@@ -979,7 +1015,7 @@ class AFCLane:
                     and not self.tool_loaded):
                     self._prep_capture_td1()
 
-                if self.hub == 'direct_load':
+                if self.hub == 'direct_load': # TODO: change to is_direct_hub
                     # Check to see if the printer is printing or moving, as trying to load while printer is doing something will crash klipper
                     if self.afc.function.is_printing(check_movement=True):
                         self.afc.error.AFC_error("Cannot load spool to toolhead while printer is actively moving or homing", False)
@@ -1028,19 +1064,19 @@ class AFCLane:
             #  before exiting function
             with self.mutex:
                 if self.printer.state_message == 'Printer is ready' and self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
-                    # Check to see if the printer is printing or moving, as trying to load while printer is doing something will crash klipper
-                    if self.afc.function.is_printing(check_movement=True):
-                        self.afc.error.AFC_error("Cannot load spools while printer is actively moving or homing", False)
-                        self.prep_active = False
-                        return
-
                     # Only try to load when load state trigger is false
-                    if self.prep_state and not self.load_state:
+                    if self.prep_state and not self.raw_load_state:
                         self.logger.debug(f"Prep: callback triggered {self.name}")
                         # Checking to make sure last time prep switch was activated was less than 1 second, returning to keep is printing message from spamming
                         # the console since it takes klipper some time to transition to idle when idle_resume=printing
                         if delta_time < 1.0:
                             break
+
+                        # Check to see if the printer is printing or moving, as trying to load while printer is doing something will crash klipper
+                        if self.afc.function.is_printing(check_movement=True):
+                            self.afc.error.AFC_error(f"Cannot load {self.name} spool while printer is actively moving or homing", False)
+                            self.prep_active = False
+                            return
 
                         # Calling common load function
                         self.unit_obj.prep_load(self)
@@ -1070,9 +1106,14 @@ class AFCLane:
                         if self.td1_device_id:
                             self._prep_capture_td1()
 
-                elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
+                elif (self.prep_state == True
+                      and self.raw_load_state == True
+                      and not self.afc.function.is_printing()):
                     message = 'Cannot load {} load sensor is triggered.'.format(self.name)
                     message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
+                    if self.unit_obj.type == "ViViD":
+                        message += f'\n    If filament is not stuck in sensor run AFC_RECOVER_LANE LANE={self.name}'
+                        message += " to reset internal AFC state."
                     message += '\n    Once cleared try loading again'
                     self.afc.error.AFC_error(message, pause=False)
         self.prep_active = False
@@ -1101,7 +1142,7 @@ class AFCLane:
             if (prep_state == False
                 and self.name == self.afc.current
                 and self.afc.function.is_printing()
-                and self.load_state
+                and self.raw_load_state
                 and self.status != AFCLaneState.EJECTING):
                 # Don't run if user disabled sensor in gui
                 if not self.fila_prep.runout_helper.sensor_enabled:
@@ -1426,7 +1467,7 @@ class AFCLane:
 
         # Check upstream sensors: prep, load, hub
         prep_ok = self.prep_state
-        load_ok = self.load_state
+        load_ok = self.raw_load_state
         hub_ok = self.hub_obj.state if self.hub_obj is not None else True
 
         # If all upstream sensors are still True, this is a break/jam at the toolhead
@@ -1453,7 +1494,7 @@ class AFCLane:
 
         # Check upstream sensors: prep, load
         prep_ok = self.prep_state
-        load_ok = self.load_state
+        load_ok = self.raw_load_state
         hub_ok = self.hub_obj.state if self.hub_obj is not None else False
 
         # If both upstream sensors are still True, but hub is not, this is a break/jam at the hub
@@ -1592,7 +1633,7 @@ class AFCLane:
                     if self.afc.homing_enabled:
                         move_dis += self.hub_obj.move_dis
                     self.unit_obj.move_to_hub(self, move_dis, MoveDirection.POS,
-                                                self.afc.homing_enabled)
+                                              self.afc.homing_enabled)
                     self.loaded_to_hub = True
 
                 while not self.hub_obj.state:
@@ -1881,6 +1922,36 @@ class AFCLane:
         except Exception as e:
             self.logger.error(f"{self.name} failed to save remember_spool to config: {e}")
 
+    cmd_AFC_RECOVER_LANE_help = "Command to help recover a lane without manually editing files when" \
+                                " filament was removed when power was removed. This should only be called" \
+                                " as last resort."
+    cmd_AFC_RECOVER_LANE_options = {"LANE": {"type":"string", "default":"lane1"}}
+    def cmd_AFC_RECOVER_LANE(self, gcmd):
+        """
+        Command to help recover a lane without manually editing files when filament was removed when
+        power was removed. This should only be called as last resort.
+
+        Usage
+        -----
+        `AFC_RECOVER_LANE LANE=<lane>`
+
+        Example
+        -----
+        ```
+        AFC_RECOVER_LANE LANE=lane1
+        ```
+        """
+        # This will move to common function call once merged with multi_extruder branch
+        self.tool_loaded = False
+        self.status = AFCLaneState.NONE
+        self.loaded_to_hub = False
+        self.td1_data = {}
+        if not self.remember_spool:
+            self.afc.spool.clear_values(self)
+        self.unit_obj.lane_unloaded(self)
+        self.logger.info(f"{self.name} reset")
+        self.afc.save_vars()
+
     def get_status(self, eventtime=None, save_to_file=False):
         response = {}
         if not self.connect_done: return response
@@ -1894,6 +1965,8 @@ class AFCLane:
         response['map'] = self.map
         response['load'] = self.load_state
         response["prep"] =bool(self.prep_state)
+        if self._selector_state is not None:
+            response["selector"] = bool(self._selector_state)
         response["tool_loaded"] = self.tool_loaded
         response["loaded_to_hub"] = self.loaded_to_hub
         response["material"]=self.material

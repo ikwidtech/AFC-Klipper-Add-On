@@ -13,12 +13,13 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane, MoveDirection
+    from extras.AFC_stepper import AFCExtruderStepper
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
 try: from extras.AFC_lane import (
-    AFCLaneState, SpeedMode, AssistActive, MoveDirection
+    AFCLaneState, SpeedMode, AssistActive, MoveDirection, AFCMoveWarning
 )
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
@@ -42,7 +43,7 @@ class afcBoxTurtle(afcUnit):
         firstLeg = '<span class=warning--text>|</span><span class=error--text>_</span>'
         secondLeg = firstLeg + '<span class=warning--text>|</span>'
         self.logo ='<span class=success--text>R  _____     ____\n'
-        self.logo+='E /      \  |  </span><span class=info--text>o</span><span class=success--text> | \n'
+        self.logo+='E /      \\  |  </span><span class=info--text>o</span><span class=success--text> | \n'
         self.logo+='A |       |/ ___/ \n'
         self.logo+='D |_________/     \n'
         self.logo+='Y {first}{second} {first}{second}\n'.format(first=firstLeg, second=secondLeg)
@@ -50,28 +51,42 @@ class afcBoxTurtle(afcUnit):
 
         self.logo_error ='<span class=error--text>E  _ _   _ _\n'
         self.logo_error+='R |_|_|_|_|_|\n'
-        self.logo_error+='R |         \____\n'
-        self.logo_error+='O |              \ \n'
-        self.logo_error+='R |          |\ <span class=secondary--text>X</span> |\n'
-        self.logo_error+='! \_________/ |___|</span>\n'
+        self.logo_error+='R |         \\____\n'
+        self.logo_error+='O |              \\ \n'
+        self.logo_error+='R |          |\\ <span class=secondary--text>X</span> |\n'
+        self.logo_error+='! \\_________/ |___|</span>\n'
         self.logo_error+= '  ' + self.name + '\n'
 
-    def system_Test(self, cur_lane: AFCLane, delay, assignTcmd, enable_movement):
+    def _move_lane(self, lane: AFCLane|AFCExtruderStepper, delay: float,
+                   enable_movement: bool=True) -> bool:
+        """
+        Helper method to move BoxTurtle's lane forward then backward
+
+        :param lane: Lane to move and check if filament is present.
+        :param delay: Delay amount to wait between the forward then backward movements.
+        :param enable_movement: When True movement is enabled, if False movement is disabled and
+                                a delay happens instead.
+        :return: Returns current lanes load state
+        """
+        if enable_movement:
+            lane.move(5, self.afc.short_moves_speed, self.afc.short_moves_accel, True)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + delay)
+            lane.move(-5, self.afc.short_moves_speed, self.afc.short_moves_accel, True)
+        else:
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
+        return lane.load_state
+
+    def system_Test(self, cur_lane: AFCLane|AFCExtruderStepper, delay, assignTcmd, enable_movement):
         msg = ''
         succeeded = True
 
         # Run test reverse/forward on each lane
         cur_lane.unsync_to_extruder(False)
-        if enable_movement:
-            cur_lane.move(5, self.afc.short_moves_speed, self.afc.short_moves_accel, True)
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + delay)
-            cur_lane.move(-5, self.afc.short_moves_speed, self.afc.short_moves_accel, True)
-        else:
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
+        loaded = self._move_lane(cur_lane, delay, enable_movement)
 
         if not cur_lane.prep_state:
-            if not cur_lane.load_state:
-                self.lane_not_ready(cur_lane)
+            if not loaded:
+                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
                 msg += 'EMPTY READY FOR SPOOL'
             else:
                 self.lane_fault(cur_lane)
@@ -83,7 +98,7 @@ class afcBoxTurtle(afcUnit):
         else:
             self.lane_loaded(cur_lane)
             msg +="<span class=success--text>LOCKED</span>"
-            if not cur_lane.load_state:
+            if not loaded:
                 msg +="<span class=error--text> NOT LOADED</span>"
                 self.lane_not_ready(cur_lane)
                 succeeded = False
@@ -92,8 +107,14 @@ class afcBoxTurtle(afcUnit):
                 msg +="<span class=success--text> AND LOADED</span>"
                 self.lane_illuminate_spool(cur_lane)
 
-                if cur_lane.tool_loaded:
-                    if cur_lane.get_toolhead_pre_sensor_state() == True or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state:
+                if (cur_lane.tool_loaded
+                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                    ramming_loaded = False
+                    if cur_lane.extruder_obj.tool_start == "buffer":
+                        ramming_loaded = self._buffer_toolhead_load_check(cur_lane)
+                    if (cur_lane.get_toolhead_pre_sensor_state() == True
+                        or ramming_loaded
+                        or cur_lane.extruder_obj.tool_end_state):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             cur_lane.sync_to_extruder()
                             on_shuttle = ""
@@ -101,7 +122,10 @@ class afcBoxTurtle(afcUnit):
                                 and cur_lane.extruder_obj.tc_unit_name):
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                             msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
-                            if cur_lane.extruder_obj.tool_start == "buffer":
+
+                            if (cur_lane.extruder_obj.tool_start == "buffer"
+                                and (not self.afc.homing_enabled
+                                     or not cur_lane.unit_obj.enable_buffer_tool_check)):
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
 
                             if self.afc.current == cur_lane.name:
@@ -163,7 +187,7 @@ class afcBoxTurtle(afcUnit):
             checkpoint = "retract to extruder"
             if not self.afc.homing_enabled:
                 hub_pos, checkpoint, success = self.calc_position(cur_lane,
-                                                                  lambda: cur_lane.load_state, 0,
+                                                                  lambda: cur_lane.raw_load_state, 0,
                                                                   cur_lane.short_move_dis,
                                                                   tol, cur_lane.dist_hub + 100,
                                                                   checkpoint)
@@ -193,6 +217,10 @@ class afcBoxTurtle(afcUnit):
                                                          speed_mode=SpeedMode.CALIBRATION,
                                                          endstop=cur_lane.get_toolhead_endstop(),
                                                          use_homing=self.afc.homing_enabled)
+                # Check for error and return, if error state is set then AFC tried pausing
+                # during the homing
+                if warn == AFCMoveWarning.ERROR:
+                    return False, "Error occurred when trying to move lane", 0
                 bow_pos += distance
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
                 if bow_pos >= fault_dis:
@@ -499,9 +527,13 @@ class afcBoxTurtle(afcUnit):
                                                   speed_mode=SpeedMode.CALIBRATION,
                                                   endstop=cur_lane.load_es,
                                                   assist_active=AssistActive.YES)
+            # Check for error and return, if error state is set then AFC tried pausing
+            # during the homing
+            if warn == AFCMoveWarning.ERROR:
+                return False, "Error occurred when trying to move lane", 0
         else:
             pos, checkpoint, success = self.calc_position(cur_lane,
-                                                          lambda: cur_lane.load_state, 0,
+                                                          lambda: cur_lane.raw_load_state, 0,
                                                           cur_lane.short_move_dis,
                                                           tol, move_dis,
                                                           "retract to extruder")
@@ -568,7 +600,9 @@ class afcBoxTurtle(afcUnit):
                          assist_active=AssistActive.NO, endstop=lane.load_es,
                          use_homing=True)
         x = 0
-        while not lane.load_state and lane.prep_state and lane.load is not None:
+        while (not lane.raw_load_state
+               and lane.prep_state
+               and lane.load is not None):
             x += 1
             lane.move(self.short_move_dis,500,400)
             self.reactor.pause(self.reactor.monotonic() + 0.1)
@@ -605,7 +639,7 @@ class afcBoxTurtle(afcUnit):
         """
         try:
             if lane.loaded_to_hub:
-                lane.move_to(lane.dist_hub * -1, SpeedMode.HUB,
+                lane.move_to(lane.dist_hub * -1, SpeedMode.DIST_HUB,
                              endstop=lane.load_es, assist_active=AssistActive.DYNAMIC,
                              use_homing=self.afc.homing_enabled)
             max_tries = 0

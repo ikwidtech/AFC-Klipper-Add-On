@@ -33,10 +33,10 @@ function show_help() {
 
 function copy_config() {
   mkdir -p "${afc_config_dir}"
-  cp ${afc_path}/config/AFC.cfg "${afc_config_dir}/"
-  cp ${afc_path}/config/AFC_Macro_Vars.cfg "${afc_config_dir}/"
+  cp "${afc_path}/config/AFC.cfg" "${afc_config_dir}/"
+  cp "${afc_path}/config/AFC_Macro_Vars.cfg" "${afc_config_dir}/"
   mkdir -p "${afc_config_dir}/mcu"
-  cp -R ${afc_path}/config/macros "${afc_config_dir}/"
+  cp -R "${afc_path}/config/macros" "${afc_config_dir}/"
 }
 
 function copy_openams_config() {
@@ -57,6 +57,22 @@ get_git_version() {
 	cd - > /dev/null || exit
 }
 
+check_for_uncommitted_changes() {
+  echo "→ Checking for uncommitted changes…"
+    if ! git -C "${afc_path}" diff --quiet || \
+       ! git -C "${afc_path}" diff --quiet --cached; then
+      echo "❌ You have uncommitted changes in ${afc_path}."
+      echo "   Please commit or stash them before running this script."
+      echo ""
+      echo "💡 To discard your changes and reset the branch:"
+      echo "   cd \"${afc_path}\""
+      echo "   git checkout ${branch}"
+      echo "   git reset --hard origin/${branch}"
+      echo "   git clean -fd"
+      exit 1
+    fi
+}
+
 clone_and_maybe_restart() {
   if [[ ! -d "${afc_path}/.git" ]]; then
     echo "→ Cloning ${branch} from ${gitrepo} into ${afc_path}…"
@@ -71,19 +87,7 @@ clone_and_maybe_restart() {
     echo "→ Switching to branch '${branch}'…"
     git -C "${afc_path}" checkout --quiet "${branch}"
 
-    echo "→ Checking for uncommitted changes…"
-    if ! git -C "${afc_path}" diff --quiet || \
-       ! git -C "${afc_path}" diff --quiet --cached; then
-      echo "❌ You have uncommitted changes in ${afc_path}."
-      echo "   Please commit or stash them before running this script."
-      echo ""
-      echo "💡 To discard your changes and reset the branch:"
-      echo "   cd \"${afc_path}\""
-      echo "   git checkout ${branch}"
-      echo "   git reset --hard origin/${branch}"
-      echo "   git clean -fd"
-      exit 1
-    fi
+    check_for_uncommitted_changes
 
     echo "→ Fetching updates in ${afc_path}…"
     git -C "${afc_path}" fetch --prune --quiet
@@ -130,7 +134,7 @@ exclude_from_klipper_git() {
   local EXCLUDE_FILE="${klipper_dir}/.git/info/exclude"
 
   # Find all .py files in the extras directory and add them to the exclude file if they are not already present
-  find "$EXTRAS_DIR" -type f -name "*.py" | while read -r file; do
+  find "$EXTRAS_DIR" -type f -name "AFC*.py" | while read -r file; do
     # Adjust the file path to the required format
     local relative_path="klippy/extras/$(basename "$file")"
     if ! grep -Fxq "$relative_path" "$EXCLUDE_FILE"; then
@@ -183,9 +187,7 @@ function auto_update() {
 
 
 remove_vars_tool_file() {
-  if [ -f "${afc_config_dir}/*.tool" ]; then
-    rm "${afc_config_dir}/*.tool"
-  fi
+  rm -f "${afc_config_dir}"/*.tool
 }
 
 stop_service() {

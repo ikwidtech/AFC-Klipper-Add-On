@@ -27,9 +27,9 @@ Thanks for your interest in contributing! Whether it's a bug report, new feature
 
 ### Testing
 
-- If applicable, test your changes with your Klipper environment.
-- Make sure your code doesn't introduce errors or break existing functionality.
-- While formal unit tests may not be in place yet, please validate your changes manually.
+- Add or update tests in `tests/` when changing logic in `extras/`.
+- All tests must pass before a PR will be merged — CI runs them automatically.
+- See [Running Tests](#running-tests) below for setup and usage instructions.
 
 ### Pull Requests
 
@@ -55,11 +55,11 @@ You can do this by running the following:
 # Install virtualenv globally
 pip install virtualenv
 
-# Create local virtual environment (will create directory named "venv" in your working directory)
-python3 -m venv venv
+# Create local virtual environment (will create directory named ".venv" in your working directory)
+python3 -m venv .venv
 
 # Activate the virtual environment in your current terminal/shell
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ## Install dependencies
@@ -83,6 +83,177 @@ git clone --depth=1 https://github.com/Klipper3d/klipper
 
 Then you'll need to ensure the `klipper/klippy` is added in the `PYTHONPATH` environment variable. The project `.vscode/settings.json`
 should configure that for VSCode, but you may need to refer to your own IDE for help ensuring the extra path is added.
+
+## Running Tests
+
+All tests live under the `tests/` directory. There are two kinds:
+
+| Kind | Location | Speed | Requires Klipper? |
+|------|----------|-------|-------------------|
+| **Unit tests** | `tests/test_AFC_*.py` | Fast (~1 s) | No |
+| **Klippy integration tests** | `tests/klippy/*.test` | Slow (~5–30 s) | Yes |
+
+### Unit tests
+
+Unit tests exercise individual AFC Python modules using lightweight mocks — no
+Klipper process, no hardware. The shared mock infrastructure lives in
+`tests/conftest.py`.
+
+After [installing dependencies](#install-dependencies), run:
+
+```shell
+python -m pytest tests/
+```
+
+To get a coverage report as well:
+
+```shell
+python -m pytest tests/ --cov=extras --cov-report=term-missing
+```
+
+> [!TIP]
+> Pass `-v` for verbose output or `-k <pattern>` to run only tests whose name
+> matches a pattern, e.g. `pytest -k AFC_lane`.
+
+### Klippy integration tests
+
+Integration tests load AFC modules inside a real Klipper process using a
+simulated STM32H723 MCU (no physical hardware required). They are slower and
+need a one-time setup.
+
+#### One-time setup
+
+**1. Clone Klipper** into the repository root (already ignored by `.gitignore`):
+
+```shell
+git clone --depth 1 https://github.com/Klipper3d/klipper.git klipper
+```
+
+**2. Install Klipper's Python dependencies** into your virtual environment:
+
+```shell
+pip install -r klipper/scripts/klippy-requirements.txt
+pip install -r klipper/scripts/tests-requirements.txt
+```
+
+**3. Install the ARM cross-compiler** needed to compile the STM32H723 firmware
+and generate the MCU dictionary file:
+
+```shell
+# Ubuntu / Debian
+sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+# Arch Linux
+sudo pacman -S arm-none-eabi-gcc arm-none-eabi-newlib
+```
+
+**4. Build the STM32H723 MCU dictionary:**
+
+```shell
+cp tests/klippy/stm32h723.config klipper/.config
+make -C klipper olddefconfig
+make -C klipper || true   # link may fail on newer GCC; the dict is generated earlier
+mkdir -p tests/dict
+cp klipper/out/klipper.dict tests/dict/stm32h723.dict
+```
+
+> [!NOTE]
+> The link step may fail with GCC 14+ due to an LTO mismatch — this is expected.
+> The `klipper.dict` file is produced before linking, so the `|| true` keeps the
+> build going. The final `test` command in CI verifies the dict was produced.
+
+#### Running all tests with the helper script
+
+`run-tests.sh` runs unit tests and klippy integration tests against both
+Klipper and Kalico in one command:
+
+```shell
+./run-tests.sh
+```
+
+Flags to run a subset:
+
+| Flag | What runs |
+|------|-----------|
+| `--unit` | Unit tests only |
+| `--klippy` | Klippy integration tests against both firmwares |
+| `--klipper` | Klippy integration tests against Klipper only |
+| `--kalico` | Klippy integration tests against Kalico only |
+
+The script auto-builds `tests/dict/stm32h723.dict` from whichever firmware is
+being tested if the dict file doesn't exist yet.
+
+#### Running against Klipper manually
+
+```shell
+KLIPPER_PATH=$(pwd)/klipper \
+DICTDIR=$(pwd)/tests/dict \
+python -m pytest tests/klippy/ -v
+```
+
+#### Running against Kalico
+
+Kalico (a Klipper fork by KalicoCrew) can be tested the same way. Clone it
+alongside the existing `klipper/` directory, then point `KLIPPER_PATH` at it.
+
+**1. Clone Kalico:**
+
+```shell
+git clone --depth 1 https://github.com/KalicoCrew/kalico.git kalico
+```
+
+**2. Install Kalico's Python dependencies:**
+
+```shell
+pip install -r kalico/scripts/klippy-requirements.txt
+```
+
+**3. Build chelper** (Kalico does not ship `build_chelper.py`; import it directly):
+
+```shell
+python kalico/klippy/chelper/__init__.py
+```
+
+**4. Build the STM32H723 MCU dictionary from Kalico:**
+
+```shell
+cp tests/klippy/stm32h723.config kalico/.config
+make -C kalico olddefconfig
+make -C kalico || true
+mkdir -p tests/dict
+cp kalico/out/klipper.dict tests/dict/stm32h723.dict
+```
+
+**5. Run the tests:**
+
+```shell
+KLIPPER_PATH=$(pwd)/kalico \
+DICTDIR=$(pwd)/tests/dict \
+python -m pytest tests/klippy/ -v
+```
+
+#### Running both unit and integration tests together
+
+```shell
+KLIPPER_PATH=$(pwd)/klipper \
+DICTDIR=$(pwd)/tests/dict \
+python -m pytest tests/ -v
+```
+
+#### How the integration tests work
+
+Each `tests/klippy/*.test` file describes one test scenario:
+
+```
+DICTIONARY stm32h723.dict   # MCU dict to simulate against
+CONFIG     afc_base.cfg     # Klipper config file (relative to the .test file)
+AFC_STATUS                  # GCode lines to execute
+```
+
+The `conftest.py` in `tests/` automatically symlinks AFC's `extras/` modules
+into the cloned Klipper tree at the start of the session and removes them when
+the session finishes. The Klipper configs live alongside the `.test` files in
+`tests/klippy/`.
 
 ## Linting
 

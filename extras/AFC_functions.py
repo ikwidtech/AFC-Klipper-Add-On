@@ -15,6 +15,7 @@ import random
 import re
 import traceback
 import configparser
+import inspect
 
 from configfile import error
 from datetime import datetime
@@ -172,7 +173,7 @@ class afcFunction:
         taskdone = False
         sectionfound = False
         # Creating regex pattern based off rawsection
-        pattern = re.compile("^\[\s*{}\s*\]".format(rawsection))
+        pattern = re.compile("^\\[\\s*{}\\s*\\]".format(rawsection))
         for filename in os.listdir(self.afc.cfgloc):
             file_path = os.path.join(self.afc.cfgloc, filename)
             if os.path.isfile(file_path) and filename.endswith(".cfg"):
@@ -280,11 +281,13 @@ class afcFunction:
                         self.afc.gcode.run_script_from_command(self.afc.auto_level_macro)
                         self.afc.toolhead.wait_moves()
                     else:
-                        self.afc.error.AFC_error("Auto level macro defined, but not found in printer configuration.", False, level=2)
+                        self.afc.error.AFC_error("Auto level macro defined, but not found in printer configuration.",
+                                                 False, stack_name=inspect.currentframe().f_back.f_code.co_name)
                         return False
                 return True
             else:
-                self.afc.error.AFC_error("Please home printer before doing a tool load", False, level=2)
+                self.afc.error.AFC_error("Please home printer before doing a tool load",
+                                         False, stack_name=inspect.currentframe().f_back.f_code.co_name)
                 return False
         else:
             return True
@@ -1453,7 +1456,7 @@ class afcFunction:
 
         # Create buttons for each loaded lane
         for index, LANE in enumerate(self.afc.lanes.values()):
-            if LANE.load_state:
+            if LANE.raw_load_state:
                 button_label = "{}".format(LANE.name)
                 if dis is not None:
                     button_command = "AFC_LANE_RESET LANE={} DISTANCE={}".format(LANE.name, dis)
@@ -1546,7 +1549,7 @@ class afcFunction:
             cur_lane.move(short_move * -1, cur_lane.short_moves_speed, cur_lane.short_moves_accel, True)
             pos -= short_move
 
-            if not cur_lane.load_state:
+            if not cur_lane.raw_load_state:
                 self.afc.error.AFC_error(fail_state_msg.format(cur_lane, "load"), pause=False)
                 return
 

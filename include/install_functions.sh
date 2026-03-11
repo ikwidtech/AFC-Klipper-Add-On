@@ -27,7 +27,7 @@ link_extensions() {
   local message
 
   if [ -d "${klipper_dir}/klippy/extras" ]; then
-    for extension in "${afc_path}"/extras/*.py; do
+    for extension in "${afc_path}"/extras/AFC*.py; do
       ln -sf "${afc_path}/extras/$(basename "${extension}")" "${klipper_dir}/klippy/extras/$(basename "${extension}")"
     done
   else
@@ -72,7 +72,7 @@ copy_unit_files() {
   "ViViD")
     cp "${afc_path}/templates/AFC_Vivid_1.cfg" "${afc_config_dir}/AFC_Vivid_1.cfg"
     cp "${afc_path}/templates/AFC_Hardware-AFC.cfg" "${afc_config_dir}/AFC_Hardware.cfg"
-    cp "${afc_path}/config/mcu/Vivid.cfg" "${afc_config_dir}/mcu/Vivid.cfg"
+    cp "${afc_path}/config/mcu/Vivid.cfg" "${afc_config_dir}/mcu/Vivid_1.cfg"
     ;;
   "BoxTurtle (4-Lane)")
     cp "${afc_path}/config/mcu/AFC_Lite.cfg" "${afc_config_dir}/mcu/AFC_Lite.cfg"
@@ -93,9 +93,10 @@ copy_unit_files() {
     ;;
 
   "HTLF")
-    cp "${afc_path}/config/mcu/HTLF_${htlf_board_type}.cfg" "${afc_config_dir}/mcu/"
-    [[ "$htlf_board_type" == "MMB_1.0" || "$htlf_board_type" == "MMB_1.1" ]] && htlf_board_type="MMB"
-    cp "${afc_path}/templates/AFC_HTLF_1-${htlf_board_type}.cfg" "${afc_config_dir}/AFC_${htlf_board_type}_${boxturtle_name}.cfg"
+    local board_type="$htlf_board_type"
+    cp "${afc_path}/config/mcu/HTLF_${board_type}.cfg" "${afc_config_dir}/mcu/"
+    [[ "$board_type" == "MMB_1.0" || "$board_type" == "MMB_1.1" ]] && board_type="MMB"
+    cp "${afc_path}/templates/AFC_HTLF_1-${board_type}.cfg" "${afc_config_dir}/AFC_${board_type}_${boxturtle_name}.cfg"
     cp "${afc_path}/templates/AFC_Hardware-HTLF.cfg" "${afc_config_dir}/AFC_Hardware.cfg"
     ;;
 
@@ -117,10 +118,13 @@ copy_unit_files() {
     elif [ "${qb_motor_type}" == "NEMA_17" ]; then
       cp "${afc_path}/templates/AFC_QuattroBox_17.cfg" "${afc_config_dir}/AFC_QuattroBox_1.cfg"
       if [ "${qb_board_type}" == "MMB_1.0" ]; then
+        cp "${afc_path}/config/mcu/MMB_1.0_QB.cfg" "${afc_config_dir}/mcu/"
         sed -i "s/include mcu\/MMB_QB.cfg/include mcu\/MMB_1.0_QB.cfg/g" "${afc_config_dir}/AFC_QuattroBox_1.cfg"
       elif [ "${qb_board_type}" == "MMB_1.1" ]; then
+        cp "${afc_path}/config/mcu/MMB_1.1_QB.cfg" "${afc_config_dir}/mcu/"
         sed -i "s/include mcu\/MMB_QB.cfg/include mcu\/MMB_1.1_QB.cfg/g" "${afc_config_dir}/AFC_QuattroBox_1.cfg"
       elif [ "${qb_board_type}" == "MMB_2.0" ]; then
+        cp "${afc_path}/config/mcu/MMB_2.0_QB.cfg" "${afc_config_dir}/mcu/"
         sed -i "s/include mcu\/MMB_QB.cfg/include mcu\/MMB_2.0_QB.cfg/g" "${afc_config_dir}/AFC_QuattroBox_1.cfg"
       fi
     fi
@@ -252,8 +256,8 @@ fi
 message+="""
 You may now quit the script or return to the main menu.
 
-If you would like to add any additional units, please restart to script to ensure the
-current units are loaded correctly.
+${RED}If you would like to add any additional units, please restart the script to ensure the
+current units are loaded correctly.${NC}
 """
 
 }

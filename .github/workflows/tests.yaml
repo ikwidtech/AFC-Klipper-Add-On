@@ -1,0 +1,145 @@
+name: Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+      - DEV
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write  # required to post PR comments
+
+jobs:
+  # ------------------------------------------------------------------
+  # Unit tests (fast, no Klipper dependency)
+  # ------------------------------------------------------------------
+  unit-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history required for gh-pages deployment
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Create virtual environment
+        run: python -m venv .venv
+
+      - name: Install dependencies
+        run: .venv/bin/pip install -r requirements.txt
+
+      - name: Run unit tests with coverage
+        run: |
+          .venv/bin/python -m pytest tests/ \
+            --cov=extras \
+            --cov-report=term-missing \
+            --cov-report=html:coverage-report \
+            --cov-report=xml:coverage.xml \
+            --junitxml=test-results.xml
+
+      - name: Write coverage summary to job log
+        if: always()
+        run: |
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          .venv/bin/python -m coverage report >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload HTML coverage report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report.zip
+          path: coverage-report/
+          if-no-files-found: error
+          retention-days: 30
+
+  # ------------------------------------------------------------------
+  # Klippy integration tests (runs AFC under a real Klipper/Kalico process)
+  # ------------------------------------------------------------------
+  klippy-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware:
+          - name: klipper
+            repo: https://github.com/Klipper3d/klipper.git
+          - name: kalico
+            repo: https://github.com/KalicoCrew/kalico.git
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      - name: Create virtual environment
+        run: python -m venv .venv
+
+      - name: Install Python test dependencies
+        run: .venv/bin/pip install -r requirements.txt
+
+      # Clone into klipper/ regardless of variant so KLIPPER_PATH needs no change.
+      - name: Clone ${{ matrix.firmware.name }}
+        run: git clone --depth 1 ${{ matrix.firmware.repo }} klipper
+
+      - name: Install klippy Python dependencies
+        run: .venv/bin/pip install -r klipper/scripts/klippy-requirements.txt
+
+      # chelper is a C extension compiled at runtime. Kalico does not ship
+      # build_chelper.py, so the fallback chain handles both variants.
+      - name: Build chelper
+        run: |
+          cd klipper
+          python klippy/chelper/__init__.py 2>/dev/null || \
+            make PYTHON=$(pwd)/../.venv/bin/python scripts/build_chelper.py || \
+            true  # chelper may auto-build on first import; continue
+
+      # Install the ARM cross-compiler toolchain needed to build STM32H723 firmware.
+      - name: Install ARM cross-compiler
+        run: sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      # Build the STM32H723 MCU dict.
+      # The dict file is generated during compilation (before linking), so we
+      # allow link errors (|| true) and verify the dict was produced.
+      - name: Build STM32H723 firmware dict
+        run: |
+          cp tests/klippy/stm32h723.config klipper/.config
+          make -C klipper olddefconfig
+          make -C klipper || true  # link may fail with newer GCC LTO; dict is generated earlier
+          test -f klipper/out/klipper.dict || (echo "ERROR: klipper.dict not generated" && exit 1)
+          mkdir -p tests/dict
+          cp klipper/out/klipper.dict tests/dict/stm32h723.dict
+
+      - name: Run klippy integration tests
+        env:
+          KLIPPER_PATH: ${{ github.workspace }}/klipper
+          DICTDIR: ${{ github.workspace }}/tests/dict
+        run: |
+          .venv/bin/python -m pytest tests/klippy/ -v \
+            --junitxml=klippy-test-results-${{ matrix.firmware.name }}.xml
+
+      - name: Upload klippy test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: klippy-test-results-${{ matrix.firmware.name }}.zip
+          path: klippy-test-results-${{ matrix.firmware.name }}.xml
+          if-no-files-found: warn
+          retention-days: 30
