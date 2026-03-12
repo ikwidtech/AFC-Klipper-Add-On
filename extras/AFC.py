@@ -73,6 +73,7 @@ class afc:
 
         self.function: afcFunction   = self.printer.load_object(config, 'AFC_functions')
         self.function.afc = self
+        self.function.logger = self.logger
         self.gcode: GCodeDispatch = self.printer.load_object(config, 'gcode')
 
         # Registering stepper callback so that mux macro can be set properly with valid lane names

@@ -120,7 +120,7 @@ class afcError:
                             )
                             return False
 
-                cur_lane.set_unloaded()
+                cur_lane.set_tool_unloaded()
                 cur_lane.loaded_to_hub = False
                 cur_lane.unit_obj.prep_load(cur_lane)
                 cur_lane.unit_obj.prep_post_load(cur_lane)

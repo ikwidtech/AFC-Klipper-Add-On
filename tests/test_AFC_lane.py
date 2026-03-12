@@ -195,6 +195,7 @@ def _make_afc_lane(fullname="AFC_stepper lane1"):
     lane.hub_obj = None
     lane.buffer_obj = None
     lane.extruder_obj = MagicMock()
+    lane.endstops = {}
     lane.espooler = MagicMock()
     lane.espooler.assist.return_value = False
     lane.hub = "PB1"
@@ -210,6 +211,9 @@ def _make_afc_lane(fullname="AFC_stepper lane1"):
     lane.fwd_speed_multi = 0.5
     lane.drive_stepper = None
     lane.dist_hub = 900
+    lane.remember_spool = False
+    lane.short_moves_speed = 50
+    lane.short_moves_accel = 100
     return lane
 
 
@@ -334,17 +338,17 @@ class TestAFCLaneLoadEs:
     def test_only_lane_true_returns_endstop_name(self):
         lane = _make_afc_lane()
         lane.only_lane = True
-        lane.load_endstop_name = "lane1_load"
+        lane.endstops.update({AFCHomingPoints.LOAD: {"endstop" : "PIN123", "endstop_name": "lane1_load"}})
         assert lane.load_es == "lane1_load"
 
     def test_only_lane_true_unique_endstop_per_lane(self):
         lane_a = _make_afc_lane("AFC_stepper laneA")
         lane_a.only_lane = True
-        lane_a.load_endstop_name = "laneA_load"
+        lane_a.endstops.update({AFCHomingPoints.LOAD: {"endstop" : "PIN123", "endstop_name": "laneA_load"}})
 
         lane_b = _make_afc_lane("AFC_stepper laneB")
         lane_b.only_lane = True
-        lane_b.load_endstop_name = "laneB_load"
+        lane_a.endstops.update({AFCHomingPoints.LOAD: {"endstop" : "PIN123", "endstop_name": "laneB_load"}})
 
         assert lane_a.load_es != lane_b.load_es
 
@@ -703,8 +707,9 @@ class TestMoveTo:
         assert warn == AFCMoveWarning.NONE
         assert call_args[0] == AFCHomingPoints.BUFFER
         assert call_args[1] == MOVE_DISTANCE + HOMING_OVERSHOOT
-        assert call_args[2] == SpeedMode.SHORT
-        assert call_args[3] == HOMING
+        assert call_args[2] == lane.short_moves_speed
+        assert call_args[3] == lane.short_moves_accel
+        assert call_args[4] == bool(MOVE_DISTANCE > 0)
         assert kwargs["assist_active"] == False
     
     def test_drive_stepper_no_extruder_stepper_homing_neg_movement(self):
@@ -730,8 +735,9 @@ class TestMoveTo:
         assert warn == AFCMoveWarning.NONE
         assert call_args[0] == AFCHomingPoints.BUFFER
         assert call_args[1] == MOVE_DISTANCE - HOMING_OVERSHOOT
-        assert call_args[2] == SpeedMode.SHORT
-        assert call_args[3] == False
+        assert call_args[2] == lane.short_moves_speed
+        assert call_args[3] == lane.short_moves_accel
+        assert call_args[4] == bool(MOVE_DISTANCE > 0)
         assert kwargs["assist_active"] == False
 
     def test_drive_stepper_no_extruder_stepper_homing_neg_movement_homing_error(self):
@@ -757,8 +763,9 @@ class TestMoveTo:
         assert warn == AFCMoveWarning.ERROR
         assert call_args[0] == AFCHomingPoints.BUFFER
         assert call_args[1] == MOVE_DISTANCE - HOMING_OVERSHOOT
-        assert call_args[2] == SpeedMode.SHORT
-        assert call_args[3] == False
+        assert call_args[2] == lane.short_moves_speed
+        assert call_args[3] == lane.short_moves_accel
+        assert call_args[4] == bool(MOVE_DISTANCE > 0)
         assert kwargs["assist_active"] == False
 
     def test_drive_stepper_no_extruder_stepper_homing_pos_movement_short(self):
@@ -785,8 +792,9 @@ class TestMoveTo:
         assert warn == AFCMoveWarning.WARN
         assert call_args[0] == AFCHomingPoints.BUFFER
         assert call_args[1] == MOVE_DISTANCE + HOMING_OVERSHOOT
-        assert call_args[2] == SpeedMode.SHORT
-        assert call_args[3] == HOMING
+        assert call_args[2] == lane.short_moves_speed
+        assert call_args[3] == lane.short_moves_accel
+        assert call_args[4] == HOMING
         assert kwargs["assist_active"] == False
     
     def test_extruder_stepper_no_drive_stepper_homing_pos_movement_short(self):
@@ -813,6 +821,7 @@ class TestMoveTo:
         assert warn == AFCMoveWarning.WARN
         assert call_args[0] == AFCHomingPoints.BUFFER
         assert call_args[1] == MOVE_DISTANCE + HOMING_OVERSHOOT
-        assert call_args[2] == SpeedMode.SHORT
-        assert call_args[3] == HOMING
+        assert call_args[2] == lane.short_moves_speed
+        assert call_args[3] == lane.short_moves_accel
+        assert call_args[4] == HOMING
         assert kwargs["assist_active"] == False

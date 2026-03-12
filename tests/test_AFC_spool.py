@@ -43,6 +43,7 @@ def _make_spool():
     spool.logger = afc.logger
     spool.disable_weight_check = False
     spool.next_spool_id = None
+    spool.SPOOLMAN_REMOTE_METHOD = 'spoolman_set_active_spool'
 
     return spool
 
@@ -483,7 +484,7 @@ class TestSetActiveSpool:
         spool.printer.lookup_object = MagicMock(return_value=webhooks)
         spool.set_active_spool(7)
         webhooks.call_remote_method.assert_called_once_with(
-            "spoolman_set_active_spool", spool_id=7
+            spool.SPOOLMAN_REMOTE_METHOD, spool_id=7
         )
 
     def test_calls_webhook_with_none_when_id_is_none(self):
@@ -493,7 +494,7 @@ class TestSetActiveSpool:
         spool.printer.lookup_object = MagicMock(return_value=webhooks)
         spool.set_active_spool(None)
         webhooks.call_remote_method.assert_called_once_with(
-            "spoolman_set_active_spool", spool_id=None
+            spool.SPOOLMAN_REMOTE_METHOD, spool_id=None
         )
 
 

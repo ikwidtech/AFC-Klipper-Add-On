@@ -295,3 +295,35 @@ class TestAfcDeltaTime:
         dt.last_time = None
         # Should not raise (caught internally)
         dt.log_with_time("safe call")
+
+
+# ── _rename ───────────────────────────────────────────────────────────────────
+
+class TestRename:
+    def test_rename_calls_register_command_for_base(self):
+        func = _make_func()
+        func.afc.gcode.register_command = MagicMock(return_value=MagicMock())
+        mock_func = MagicMock()
+        func._rename("RESUME", "_AFC_RENAMED_RESUME_", mock_func, "help text")
+        calls = func.afc.gcode.register_command.call_args_list
+        # Should call at least: register_command("RESUME", None) and
+        # register_command("RESUME", mock_func, ...)
+        names = [c[0][0] for c in calls]
+        assert "RESUME" in names
+
+    def test_rename_registers_afc_function_under_base_name(self):
+        func = _make_func()
+        mock_func = MagicMock()
+        prev_cmd = MagicMock()
+        # _rename calls register_command 3 times: unregister, re-register old, register new
+        func.afc.gcode.register_command = MagicMock(side_effect=[prev_cmd, None, None])
+        func._rename("RESUME", "_AFC_RENAMED_RESUME_", mock_func, "help")
+        final_call = func.afc.gcode.register_command.call_args_list[-1]
+        assert final_call[0][1] is mock_func
+
+    def test_rename_logs_debug_when_command_not_found(self):
+        func = _make_func()
+        func.afc.gcode.register_command = MagicMock(return_value=None)
+        func._rename("RESUME", "_AFC_RENAMED_RESUME_", MagicMock(), "help")
+        debug_msgs = [m for lvl, m in func.logger.messages if lvl == "debug"]
+        assert any("RESUME" in m for m in debug_msgs)

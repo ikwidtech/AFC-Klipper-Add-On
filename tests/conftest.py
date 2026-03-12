@@ -189,6 +189,11 @@ def _make_force_move_mock():
     mod.calc_move_time = calc_move_time
     return mod
 
+def _make_klippy_ready_mock():
+    mod = types.ModuleType("klippy")
+    mod.message_ready = "Printer is ready"
+    return mod
+
 
 # Install mocks before any extras imports happen
 sys.modules.setdefault("configfile", _make_configfile_mock())
@@ -201,6 +206,7 @@ _kin_mod, _kin_ext_mod = _make_kinematics_mocks()
 sys.modules.setdefault("kinematics", _kin_mod)
 sys.modules.setdefault("kinematics.extruder", _kin_ext_mod)
 sys.modules.setdefault("extras.force_move", _make_force_move_mock())
+sys.modules.setdefault("klippy", _make_klippy_ready_mock())
 
 _led_mock = _make_led_mock()
 sys.modules.setdefault("extras.led", _led_mock)
@@ -382,7 +388,7 @@ class MockAFC:
 
 class MockPrinter:
     """Mock for Klipper's printer object."""
-
+    command_error = Exception
     def __init__(self, afc=None):
         self._afc = afc or MockAFC()
         self._reactor = MockReactor()

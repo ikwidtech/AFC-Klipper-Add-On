@@ -129,8 +129,6 @@ class afcFunction:
         Helper function to get stock macros, rename to something and replace stock macro with AFC functions
         """
         # Renaming users Resume macro so that RESUME calls AFC_Resume function instead
-        self.afc = self.printer.lookup_object('AFC')
-        self.logger = self.afc.logger
         prev_cmd = self.afc.gcode.register_command(base_name, None)
         if prev_cmd is not None:
             pdesc = "Renamed builtin of '%s'" % (base_name,)

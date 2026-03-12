@@ -182,7 +182,7 @@ class AFC_vivid(afcBoxTurtle):
                     self.unselect_lane()
 
                 self.logger.info(f"ViViD: Selecting {lane.name}")
-                homed, distance= self.selector_stepper_obj.do_homing_move(
+                homed, distance = self.selector_stepper_obj.do_homing_move(
                     movepos=self.max_selector_movement * sel_dir,
                     speed=self.selector_homing_speed,
                     accel=self.selector_homing_accel,
