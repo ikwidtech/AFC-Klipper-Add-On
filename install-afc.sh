@@ -28,7 +28,12 @@ if [[ -n "${_requested_branch}" && -d "${SCRIPT_DIR}/.git" ]]; then
   if [[ "${_current_branch}" != "${_requested_branch}" ]]; then
     echo "→ Switching to branch '${_requested_branch}' before loading…"
     git -C "${SCRIPT_DIR}" fetch --prune --quiet
-    git -C "${SCRIPT_DIR}" checkout --quiet -- "${_requested_branch}"
+    if ! git -C "${SCRIPT_DIR}" rev-parse --verify --quiet "origin/${_requested_branch}" >/dev/null 2>&1 \
+      && ! git -C "${SCRIPT_DIR}" rev-parse --verify --quiet "${_requested_branch}" >/dev/null 2>&1; then
+      echo "✗ Branch '${_requested_branch}' does not exist locally or on the remote."
+      exit 1
+    fi
+    git -C "${SCRIPT_DIR}" checkout --quiet "${_requested_branch}"
     git -C "${SCRIPT_DIR}" pull --rebase --quiet 2>/dev/null || true
     echo "✓ Branch switched. Restarting script…"
     exec "${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")" "$@"

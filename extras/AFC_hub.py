@@ -123,7 +123,7 @@ class afc_hub:
         """
         state = self._state
         if self.switch_pin.lower() == "virtual":
-            state = any(lane._load_state for lane in self.lanes.values())
+            state = any(lane.raw_load_state for lane in self.lanes.values())
         return state
 
     def switch_pin_callback(self, eventtime, state):

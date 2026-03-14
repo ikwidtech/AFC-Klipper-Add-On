@@ -117,18 +117,18 @@ class TestStateProperty:
     def test_virtual_hub_true_when_any_lane_load_state_true(self):
         hub = _make_hub(switch_pin="virtual")
         lane1 = MagicMock()
-        lane1._load_state = False
+        lane1.raw_load_state = False
         lane2 = MagicMock()
-        lane2._load_state = True
+        lane2.raw_load_state = True
         hub.lanes = {"lane1": lane1, "lane2": lane2}
         assert hub.state is True
 
     def test_virtual_hub_false_when_all_lanes_not_loaded(self):
         hub = _make_hub(switch_pin="virtual")
         lane1 = MagicMock()
-        lane1._load_state = False
+        lane1.raw_load_state = False
         lane2 = MagicMock()
-        lane2._load_state = False
+        lane2.raw_load_state = False
         hub.lanes = {"lane1": lane1, "lane2": lane2}
         assert hub.state is False
 

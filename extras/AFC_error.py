@@ -105,7 +105,7 @@ class afcError:
                     while cur_lane.raw_load_state:  # slowly back filament up to lane extruder
                         cur_lane.move(-5, self.afc.short_moves_speed, self.afc.short_moves_accel, True)
                         if max_length > 0:
-                            max_length -+ 5
+                            max_length -= 5
                         else:
                             self.PauseUserIntervention(failed_to_retract_msg)
                             return False
@@ -113,7 +113,7 @@ class afcError:
                     while not cur_lane.raw_load_state:  # reload lane extruder
                         cur_lane.move(5, self.afc.short_moves_speed, self.afc.short_moves_accel, True)
                         if max_length > 0:
-                            max_length -+ 5
+                            max_length -= 5
                         else:
                             self.PauseUserIntervention(
                                 f"Failed to move back {cur_lane.name} to load sensor"
