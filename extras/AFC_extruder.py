@@ -545,7 +545,8 @@ class AFCExtruder:
                          that distance is saved and used in move_extruder function once extruder is
                          up to temperature
         """
-        self.logger.info(f"Loading {self.name}")
+        info_str = "Loading" if distance > 0 else "Unloading"
+        self.logger.info(f"{info_str} {self.name}")
         self.load_active = True
         self.current_move_distance = distance
         # TODO: maybe make this so this same function can be called normally when lanes are assigned
@@ -626,6 +627,7 @@ class AFCExtruder:
         self.logger.info(f"{self.name} {info_str} done")
         self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
+        self.afc.save_vars()
         return self.reactor.NEVER
 
     def temp_check_cb(self, eventtime:float) -> float:
