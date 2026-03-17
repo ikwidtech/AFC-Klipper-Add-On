@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-03-17]
+### Fix
+Corrected pin for [board_pins Vivid_1] From RFID0_CS=PD14 to RFID0_CS=PB14
+
 ## [2026-03-07]
 ### Fix
 - Added error checking when homing during a Tool Load or Unload, if a homing error (like communication timeout or something similar) happens during these calls that AFC displays error and returns early.
