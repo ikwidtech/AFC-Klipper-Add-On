@@ -427,7 +427,7 @@ class afcFunction:
         """
         Helper function to lookup AFC_led object.
 
-        :params led_name: name of AFC_led object to lookup
+        :params led_name: name of AFC_led object to lookup (e.g. "AFC_Indicator:1-4" or "AFC_Indicator")
 
         :return (string, object): error_string if AFC_led object is not found, led object if found
         """
@@ -437,10 +437,10 @@ class afcFunction:
         try:
             led = self.printer.lookup_object(afc_object)
         except:
-            error_string = "Error: Cannot find [{}] in config, make sure led_index in config is correct for AFC_stepper {}".format(afc_object, led_name.split(':')[-1])
+            error_string = "Error: Cannot find [{}] in config, make sure led_index in config is correct".format(afc_object)
         return error_string, led
 
-    def _get_led_indexes(self, index_values):
+    def _get_led_indexes(self, index_values: str) -> list[str]:
         """
         Helper function for creating a list for index values that have dashes and commas
         so the led's can be set correctly.
@@ -459,17 +459,48 @@ class afcFunction:
                 led_indexes += range(low, high+1)
         return led_indexes
 
-    def afc_led (self, status, idx=None):
+    def parse_led_groups(self, idx: str) -> list[str, str]:
+        """
+        Parse an LED index string into groups of (led_name, index_string).
+
+        Supports both single-LED format (``AFC_Indicator:1-4,9,10``) and
+        multi-LED format (``RGB1:1-4,RGB2:4-6,RGB3:5``) naming needs to be
+        AFC_led config name.
+
+        When a comma-separated segment contains a colon it starts a new LED
+        group; otherwise it is appended to the current group's indexes.
+
+        :param idx: raw led_index config string
+        :return: list of (led_name, index_string) tuples
+        """
+        groups = []
+        for part in idx.split(","):
+            if ":" in part:
+                led_name, index_str = part.split(":", 1)
+                groups.append((led_name.strip(), index_str.strip()))
+            else:
+                if groups:
+                    # Continuation of the previous group's indexes
+                    prev_name, prev_idx = groups[-1]
+                    groups[-1] = (prev_name, prev_idx + "," + part.strip())
+                else:
+                    self.logger.info(
+                        "Warning: led_index segment '{}' has no LED name "
+                        "and no prior group to attach to, skipping".format(part.strip())
+                    )
+        return groups
+
+    def afc_led (self, status: list[str]|str, idx=None):
         if idx is None:
             return
 
-        error_string, led = self.verify_led_object(idx)
-        if led is not None:
-            led_indexes = idx.split(":")[1]
-            range_index = self._get_led_indexes(led_indexes)
-            led.led_change(range_index, status)
-        else:
-            self.logger.info( error_string )
+        for led_name, index_str in self.parse_led_groups(idx):
+            error_string, led = self.verify_led_object(led_name)
+            if led is not None:
+                range_index = self._get_led_indexes(index_str)
+                led.led_change(range_index, status)
+            else:
+                self.logger.error( error_string )
 
     def get_filament_status(self, cur_lane):
         if cur_lane.prep_state:
