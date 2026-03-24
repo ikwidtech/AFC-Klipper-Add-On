@@ -283,6 +283,8 @@ class AFCSpool:
         """
         Helper function for setting lane spool values
         """
+        # Always reset debounce on spool change
+        cur_lane.auto_switch_triggered = False
         # set defaults if there's no spool id, or the spoolman lookup fails
         if not cur_lane.remember_spool:
             cur_lane.material = self.afc.default_material_type
@@ -301,6 +303,7 @@ class AFCSpool:
         cur_lane.material = ''
         cur_lane.color = ''
         cur_lane.weight = 0
+        cur_lane.auto_switch_triggered = False
         cur_lane.extruder_temp = None
         cur_lane.bed_temp = None
         cur_lane.clear_lane_data()
@@ -311,6 +314,7 @@ class AFCSpool:
                 try:
                     result = self.afc.moonraker.get_spool(SpoolID)
                     cur_lane.spool_id = SpoolID
+                    cur_lane.auto_switch_triggered = False
 
                     cur_lane.material           = self._get_filament_values(result['filament'], 'material')
                     if not self.afc.ignore_spoolman_material_temps:

@@ -41,7 +41,7 @@ EXCLUDE_TYPES = ["HTLF", "ViViD"]
 # Names to exclude from search when trying to find unit name in config file
 # These are more for name that could be in config files
 INVALID_UNIT_NAMES = ["AFC_buffer", "AFC_button", "AFC_extruder",
-                      "AFC_hub", "AFC_lane", "AFC_led", "AFC_prep" "AFC_stepper"]
+                      "AFC_hub", "AFC_lane", "AFC_led", "AFC_prep", "AFC_stepper"]
 
 class AssistActive(Enum):
     YES = 1
@@ -123,6 +123,7 @@ class AFCLane:
         self.spool_id           = None
         self.color              = None
         self.weight             = 0
+        self.auto_switch_triggered = False
         self._material          = None
         self.extruder_temp      = None
         self.bed_temp           = None
@@ -661,7 +662,7 @@ class AFCLane:
             unit_cfg = next(
                 config.getsection(s) for s in config.fileconfig.sections()
                 if self.unit in s
-                and "AFC" in s
+                and s.startswith("AFC_")
                 and not any(x in s for x in INVALID_UNIT_NAMES))
             self.unit_obj: afcUnit = self.printer.load_object(config, unit_cfg.get_name())
 
@@ -938,6 +939,19 @@ class AFCLane:
             # Set LED to not ready
             self.unit_obj.lane_not_ready(self)
 
+    def _handle_auto_spool_switch(self):
+        """
+        Handle automatic spool switch triggered by weight threshold.
+        Called via reactor.register_callback from update_weight_callback.
+        """
+        if self.afc.error_state or not self.afc.function.is_printing():
+            return
+
+        if self.runout_lane is not None:
+            self._perform_infinite_runout()
+        else:
+            self._perform_pause_runout()
+
     def _perform_pause_runout(self):
         """
         Common function to pause print when runout occurs, fully unloads and ejects spool if specified by user
@@ -953,8 +967,12 @@ class AFCLane:
                 self.afc.LANE_UNLOAD(self)
         # Pause print
         self.status = AFCLaneState.NONE
-        msg = "Runout triggered for lane {} and runout lane is not setup to switch to another lane".format(self.name)
-        msg += "\nPlease manually load next spool into toolhead and then hit resume to continue"
+        if self.auto_switch_triggered:
+            runout_method = "Minimum weight threshold reached"
+        else:
+            runout_method = "Runout triggered"
+        msg = "{} for lane {} and runout lane is not setup to switch to another lane.".format(runout_method, self.name)
+        msg += "\nPlease manually load next spool into toolhead and then hit resume to continue."
         self.unit_obj.lane_not_ready(self)
         self.afc.error.AFC_error(msg)
 
@@ -1293,6 +1311,22 @@ class AFCLane:
         if extruder_pos > self.past_extruder_position:
             self.update_remaining_weight(delta_length)
             self.past_extruder_position = extruder_pos
+
+            # Check if weight-based auto spool switch should trigger
+            if (self.afc.auto_spool_switch
+                and not self.auto_switch_triggered
+                and self.weight > 0
+                and self.weight <= self.afc.auto_spool_switch_threshold
+                and self.name == self.afc.current
+                and self.afc.function.is_printing()
+                and not self.afc.error_state):
+                self.auto_switch_triggered = True
+                self.logger.info(
+                    "Auto spool switch: {} weight ({:.1f}g) at or below "
+                    "threshold ({:.1f}g), triggering switch".format(
+                        self.name, self.weight, self.afc.auto_spool_switch_threshold))
+                self.reactor.register_callback(
+                    lambda et: self._handle_auto_spool_switch())
 
             # self.logger.debug(f"{self.name} Weight Timer Callback: New weight {self.weight}")
 
