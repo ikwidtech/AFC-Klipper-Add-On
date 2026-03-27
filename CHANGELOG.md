@@ -5,9 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2026-03-26]
+### Added
+- Adds support for a new `AFC_SET_SPOOL_TEMP` in order to manually set extruder/bed temps for a lane when not using Spoolman.
+
 ## [2026-03-23]
 ### Added
 - Adds support for weight based spool runout to help support spools with hooked ends. See documentation for more details.
+
 ## [2026-03-21]
 ### Fixed
 - Fixed initial load failure when an extruder is loaded with a different lane than the first in the print.
@@ -15,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2026-03-20]
 ### Added
 - Adds support for specifying multiple LED objects/RGB ports in a single led_index string (e.g. `AFC_Indicator1:4,RGB1:1-4,RGB2:4-6`)
+
+## [2026-03-17]
+### Fix
+- Corrected pin for [board_pins Vivid_1] From RFID0_CS=PD14 to RFID0_CS=PB14
 
 ## [2026-03-15]
 ### Added
