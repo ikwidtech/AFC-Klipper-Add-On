@@ -42,7 +42,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.for
 try: from extras.AFC_stats import AFCStats
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-AFC_VERSION="1.1.0"
+AFC_VERSION="1.1.10"
 
 # Class for holding different states so its clear what all valid states are
 class State:
@@ -93,6 +93,7 @@ class afc:
         self.moonraker          = None
         self.td1_defined        = False
         self._td1_present       = False
+        self._last_td1_query:float    = 0
         self.lane_data_enabled  = False
         self.prep_done          = False         # Variable used to hold of save_vars function from saving too early and overriding save before prep can be ran
         self.in_print_timer     = None
@@ -510,8 +511,12 @@ class afc:
     @property
     def td1_present(self):
         present = self._td1_present
-        if self.printer.state_message == 'Printer is ready' and self.moonraker is not None:
+        current_time = self.reactor.monotonic()
+        if (self.printer.state_message == 'Printer is ready'
+            and self.moonraker is not None
+            and (current_time - self._last_td1_query) > 30 ):
             if not self.function.is_printing(check_movement=True):
+                self._last_td1_query = current_time
                 present = self.moonraker.check_for_td1()[1]
                 self._td1_present = present
 
