@@ -240,6 +240,7 @@ class AFCExtruder:
         self.set_status_color_fn        = None
         self.check_transmit_status_fn   = None
         self.status_led_count:int       = 0
+        self._captured_toolhead_temp: Optional[dict] = None
 
         if self.toolhead_status_index:
             self.toolhead_status_index  = self.afc.function._get_led_indexes(self.toolhead_status_index)
@@ -367,7 +368,6 @@ class AFCExtruder:
                     f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
-
     def handle_connect(self):
         """
         Handle the connection event.
@@ -471,7 +471,7 @@ class AFCExtruder:
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
         if state != self.tool_start_state:
-            if self.tc_unit_name and self.no_lanes:
+            if self.tc_unit_name and self.is_standalone():
                 self.tc_lane._load_state = state
                 self.tc_lane.prep_state = state
 
@@ -556,6 +556,7 @@ class AFCExtruder:
         else:
             self.tc_lane.status = AFCLaneState.TOOL_UNLOADING
 
+        self._captured_toolhead_temp = self.afc.capture_toolhead_temp( extruder=self, async_capture=True)
         self.afc._check_extruder_temp(self.tc_lane, no_wait=True)
         self.reactor.update_timer(self.temp_check_timer,
                                 self.reactor.monotonic() +1 )
@@ -622,6 +623,10 @@ class AFCExtruder:
 
         self.function.do_enable(False, self.name)
         self.load_active = False
+
+        self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+        self._captured_toolhead_temp = None
+
         info_str = "loading" if self.current_move_distance > 0 else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
         self.tc_lane.status = AFCLaneState.NONE
@@ -792,6 +797,15 @@ class AFCExtruder:
             )
         else:
             return False
+
+    def is_standalone(self):
+        """
+        Method for returning if extruder is a standalone lane (no unit system attached to it)
+
+        :return bool: Returns True if no unit system is attached to extruder, False if units/lanes
+            are attached.
+        """
+        return self.no_lanes
 
     cmd_UPDATE_TOOLHEAD_SENSORS_help = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper"
     cmd_UPDATE_TOOLHEAD_SENSORS_options = {
